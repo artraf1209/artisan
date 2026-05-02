@@ -1,0 +1,42 @@
+# Env
+.env
+.env.local
+.env.*.local
+
+# Node / Bun
+node_modules/
+.cache/
+dist/
+out/
+*.tsbuildinfo
+bun.lock
+
+# Next.js
+.next/
+.vercel/
+
+# Python (future ML sidecar)
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Supabase
+supabase/.temp/
+supabase/types.ts
+
+# fly.io
+fly.toml.local
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp

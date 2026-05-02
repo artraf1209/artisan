@@ -1,0 +1,17 @@
+{
+  "name": "engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2",
+    "@alpacahq/alpaca-trade-api": "^3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
