@@ -34,7 +34,7 @@ fly.toml.local
 
 # Logs
 *.log
-logs/
+/logs/
 
 # IDE
 .idea/
