@@ -51,9 +51,9 @@ class FakePricesAdapter:
         self.saved_rows: list[dict] = []
 
     def fetch_daily_bars(self, symbols: list[str], start: date, end: date) -> list[dict]:
-        assert symbols == ["AAPL", "MSFT"]
+        assert symbols == ["AAPL", "MSFT", "SPY"]
         assert start < end
-        return [{"symbol": "AAPL"}, {"symbol": "MSFT"}]
+        return [{"symbol": symbol} for symbol in symbols]
 
     def save_bars(self, rows: list[dict]) -> int:
         self.saved_rows = rows
@@ -94,12 +94,13 @@ def test_run_nightly_ingest_orchestrates_all_stages() -> None:
         fundamentals_adapter=fundamentals,
         news_adapter=news,
         now=datetime(2026, 5, 4, 2, 0, tzinfo=UTC),
+        refresh_universe_from_screener=False,
     )
 
     assert summary["symbols"] == 2
-    assert summary["price_rows"] == 2
+    assert summary["price_rows"] == 3
     assert summary["fundamental_rows"] == 2
     assert summary["news_rows"] == 2
     assert len(db.inserts) == 3
-    assert prices.saved_rows == [{"symbol": "AAPL"}, {"symbol": "MSFT"}]
+    assert prices.saved_rows == [{"symbol": "AAPL"}, {"symbol": "MSFT"}, {"symbol": "SPY"}]
     assert fundamentals.synced == ["AAPL", "MSFT"]

@@ -33,6 +33,7 @@ class TechnicalScorer:
     @staticmethod
     def compute_indicator_snapshot(price_rows: list[dict[str, Any]]) -> dict[str, float | None]:
         if len(price_rows) < 30:
+            close = float(price_rows[-1]["close"]) if price_rows else None
             return {
                 "rsi_14": None,
                 "macd_line": None,
@@ -44,7 +45,10 @@ class TechnicalScorer:
                 "atr_14": None,
                 "sma_50": None,
                 "sma_200": None,
-                "close": float(price_rows[-1]["close"]) if price_rows else None,
+                "adx_14": None,
+                "obv": None,
+                "vol_ratio": None,
+                "close": close,
             }
 
         frame = pd.DataFrame(price_rows).sort_values("bar_time")
@@ -83,6 +87,27 @@ class TechnicalScorer:
         ).max(axis=1)
         atr_14 = true_range.rolling(window=14, min_periods=14).mean()
 
+        # ── ADX-14 ──────────────────────────────────────────────────────────
+        up_move = high.diff()
+        down_move = -low.diff()
+        plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+        minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+        tr14 = true_range.ewm(alpha=1 / 14, adjust=False).mean()
+        plus_di = 100 * plus_dm.ewm(alpha=1 / 14, adjust=False).mean() / tr14.replace(0, float("nan"))
+        minus_di = 100 * minus_dm.ewm(alpha=1 / 14, adjust=False).mean() / tr14.replace(0, float("nan"))
+        di_sum = (plus_di + minus_di).replace(0, float("nan"))
+        dx = 100 * (plus_di - minus_di).abs() / di_sum
+        adx_14 = dx.ewm(alpha=1 / 14, adjust=False).mean()
+
+        # ── OBV ─────────────────────────────────────────────────────────────
+        volume = frame["volume"].astype(float)
+        direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        obv = (direction * volume).cumsum()
+
+        # ── Volume ratio ─────────────────────────────────────────────────────
+        vol_sma50 = volume.rolling(window=50, min_periods=10).mean()
+        vol_ratio = volume / vol_sma50.replace(0, float("nan"))
+
         snapshot = {
             "rsi_14": _to_float(rsi.iloc[-1]),
             "macd_line": _to_float(macd_line.iloc[-1]),
@@ -95,6 +120,16 @@ class TechnicalScorer:
             "sma_50": _to_float(close.rolling(window=50, min_periods=50).mean().iloc[-1]),
             "sma_200": _to_float(close.rolling(window=200, min_periods=200).mean().iloc[-1]),
             "close": _to_float(close.iloc[-1]),
+            "adx_14": _to_float(adx_14.iloc[-1]),
+            "obv": _to_float(obv.iloc[-1]),
+            "vol_ratio": _to_float(vol_ratio.iloc[-1]),
+            # keep series for entry gate logic
+            "_close_series": close,
+            "_high_series": high,
+            "_low_series": low,
+            "_volume_series": volume,
+            "_obv_series": obv,
+            "_macd_hist_series": macd_hist,
         }
         return snapshot
 
@@ -155,10 +190,17 @@ class TechnicalScorer:
             "atr_14": snapshot["atr_14"],
             "sma_50": snapshot["sma_50"],
             "sma_200": snapshot["sma_200"],
+            "adx_14": snapshot["adx_14"],
+            "obv": snapshot["obv"],
+            "vol_ratio": snapshot["vol_ratio"],
             "close": snapshot["close"],
             "t_score": self.score_indicators(snapshot),
+            # pass-through series for entry gates (not saved to DB)
+            "_snapshot": snapshot,
         }
-        self.save_indicator_values({key: value for key, value in result.items() if key != "close" and key != "t_score"})
+        db_row = {k: v for k, v in result.items()
+                  if k not in ("close", "t_score", "_snapshot") and not k.startswith("_")}
+        self.save_indicator_values(db_row)
         logger.info("Technical score for %s: %s", symbol, result["t_score"])
         return result
 
