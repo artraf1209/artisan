@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-const DEFAULT_ADMIN_USER_ID = process.env.ADMIN_USER_ID ?? '00000000-0000-0000-0000-000000000001'
-const DEFAULT_ACCOUNT_ID = process.env.ACCOUNT_ID ?? '00000000-0000-0000-0000-000000000002'
+const DEFAULT_ADMIN_USER_ID = (process.env.ADMIN_USER_ID ?? '00000000-0000-0000-0000-000000000001').trim()
+const DEFAULT_ACCOUNT_ID = (process.env.ACCOUNT_ID ?? '00000000-0000-0000-0000-000000000002').trim()
 const DEFAULT_POSITION_FRACTION = 0.05
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

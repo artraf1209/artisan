@@ -31,11 +31,12 @@ def _first_text_block(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
-        parts = [
-            block.get("text", "").strip()
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        ]
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block["text"].strip())
+            elif hasattr(block, "text"):  # Anthropic SDK TextBlock object
+                parts.append(block.text.strip())
         return "\n".join(part for part in parts if part).strip()
     return ""
 
