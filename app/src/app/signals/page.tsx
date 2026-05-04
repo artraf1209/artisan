@@ -1,8 +1,9 @@
 import { createServerClient } from '@/lib/supabase/server'
 import { ClipboardCheck, Newspaper } from 'lucide-react'
 import PageShell from '@/components/shared/PageShell'
-import SignalFeed from '@/components/signals/SignalFeed'
+import SignalFeed, { type SignalFeedItem } from '@/components/signals/SignalFeed'
 import type { Signal } from '@/types'
+import type { ThesisAnalysis } from '@/types/hybrid'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +16,15 @@ export default async function SignalsPage() {
     db.from('signals').select('*').order('created_at', { ascending: false }).limit(50),
     db
       .from('signal_events')
-      .select('id, symbol, direction, status, composite_score, created_at')
+      .select(`
+        id,
+        symbol,
+        direction,
+        status,
+        composite_score,
+        created_at,
+        llm_analyses(*)
+      `)
       .order('created_at', { ascending: false })
       .limit(50),
   ])
@@ -23,20 +32,24 @@ export default async function SignalsPage() {
   // Prefer hybrid signal_events if they exist; fall back to legacy signals table
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hybridRows: Record<string, any>[] = hybridRes.data ?? []
-  let signals: Signal[]
+  let signals: SignalFeedItem[]
   if (hybridRows.length > 0) {
     signals = hybridRows.map(s => ({
       id: s.id,
       symbol: s.symbol,
-      direction: s.direction as Signal['direction'],
+      direction: s.direction as 'long' | 'flat',
       confidence: s.composite_score ?? 0,
       model: 'hybrid-v0',
-      metadata: null,
-      executed: s.status === 'executed',
       created_at: s.created_at,
+      status: s.status,
+      thesis: Array.isArray(s.llm_analyses)
+        ? ((s.llm_analyses.find(
+            (analysis: { analysis_type?: string }) => analysis.analysis_type === 'thesis',
+          ) as ThesisAnalysis | undefined) ?? null)
+        : null,
     }))
   } else {
-    signals = legacyRes.data ?? []
+    signals = (legacyRes.data ?? []) as Signal[]
   }
 
   return (

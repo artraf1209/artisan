@@ -6,6 +6,7 @@ const statusStyles: Record<string, string> = {
   filled: 'bg-profit/14 text-profit border-profit/20',
   long: 'bg-profit/14 text-profit border-profit/20',
   approved: 'bg-profit/14 text-profit border-profit/20',
+  'in queue': 'bg-white/10 text-white border-white/10',
   pending: 'bg-white/10 text-white border-white/10',
   submitted: 'bg-white/10 text-white border-white/10',
   short: 'bg-loss/14 text-loss border-loss/20',
