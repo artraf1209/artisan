@@ -1,9 +1,8 @@
-import { serve } from '@std/http/server'
 import { createClient } from '@supabase/supabase-js'
 
 const CONFIDENCE_THRESHOLD = 0.70
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   try {
     const { record } = await req.json()
 

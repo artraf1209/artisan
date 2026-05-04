@@ -1,4 +1,3 @@
-import { serve } from '@std/http/server'
 import { createClient } from '@supabase/supabase-js'
 
 interface AlertPayload {
@@ -8,7 +7,7 @@ interface AlertPayload {
   tradeId?: string
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   try {
     const payload: AlertPayload = await req.json()
 
