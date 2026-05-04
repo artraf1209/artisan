@@ -94,6 +94,7 @@ class AlpacaPricesAdapter:
                 "start": start.isoformat(),
                 "end": end.isoformat(),
                 "adjustment": "raw",
+                "feed": "iex",  # free-tier feed; switch to "sip" with paid subscription
             }
             if page_token:
                 params["page_token"] = page_token
