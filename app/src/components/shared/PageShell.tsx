@@ -24,7 +24,7 @@ export default function PageShell({
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Navbar />
-      <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 pb-32 pt-6 sm:px-6 lg:px-8 lg:pb-12 lg:pt-10">
+      <main className="mx-auto flex min-h-screen w-full max-w-7xl min-w-0 flex-col px-4 pb-32 pt-6 sm:px-6 lg:px-8 lg:pb-12 lg:pt-10 xl:px-10">
         <section className="mb-6 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-3">
             <p className="text-[0.7rem] font-medium uppercase tracking-[0.28em] text-muted-foreground">

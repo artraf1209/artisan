@@ -32,22 +32,18 @@ export default async function DashboardPage() {
         { href: '/briefings', label: 'Briefings', icon: Newspaper },
       ]}
     >
-      <div className="page-grid">
-        <div className="grid grid-cols-1 gap-4 md:col-span-2 md:grid-cols-2 xl:col-span-12 xl:grid-cols-12">
-          <PortfolioCard positions={positions ?? []} />
-          <SignalOverviewCard
-            signals={signals ?? []}
-            pendingApprovals={pendingApprovals ?? 0}
-          />
-          <ActivityHeatmapCard
-            tradeCount={(trades ?? []).length}
-            signalCount={(signals ?? []).length}
-          />
-        </div>
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <ActivePositions positions={positions ?? []} />
-          <RecentTrades trades={trades ?? []} />
-        </div>
+      <div className="page-grid xl:auto-rows-[minmax(0,1fr)]">
+        <PortfolioCard positions={positions ?? []} />
+        <SignalOverviewCard
+          signals={signals ?? []}
+          pendingApprovals={pendingApprovals ?? 0}
+        />
+        <ActivityHeatmapCard
+          tradeCount={(trades ?? []).length}
+          signalCount={(signals ?? []).length}
+        />
+        <ActivePositions positions={positions ?? []} />
+        <RecentTrades trades={trades ?? []} />
       </div>
     </PageShell>
   )

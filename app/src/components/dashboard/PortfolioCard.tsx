@@ -7,7 +7,7 @@ export default function PortfolioCard({ positions }: { positions: Position[] }) 
   const isPositive = totalUnrealized >= 0
 
   return (
-    <div className="surface-panel col-span-1 p-6 md:col-span-1 xl:col-span-5">
+    <div className="surface-panel col-span-1 p-6 md:col-span-1 xl:col-span-4">
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Portfolio</p>

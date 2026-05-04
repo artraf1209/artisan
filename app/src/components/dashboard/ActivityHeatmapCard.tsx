@@ -20,7 +20,7 @@ export default function ActivityHeatmapCard({
   const rows = buildActivityRows(Math.min(21, tradeCount + signalCount))
 
   return (
-    <div className="surface-panel col-span-1 md:col-span-2 xl:col-span-7 p-6">
+    <div className="surface-panel col-span-1 p-6 md:col-span-2 xl:col-span-5">
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Activity</p>

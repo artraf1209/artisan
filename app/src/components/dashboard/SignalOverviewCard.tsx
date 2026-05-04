@@ -11,7 +11,7 @@ export default function SignalOverviewCard({
   const strongest = [...signals].sort((left, right) => right.confidence - left.confidence)[0]
 
   return (
-    <div className="surface-panel col-span-1 p-6">
+    <div className="surface-panel col-span-1 p-6 md:col-span-1 xl:col-span-3">
       <div className="mb-8 flex items-start justify-between">
         <div className="space-y-1">
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Signals</p>
