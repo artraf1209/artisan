@@ -23,6 +23,7 @@ Each file is one coding session. Work them in order — later tasks depend on ea
 | 16 | [Frontend: types + approval queue](./16-frontend-queue.md) | ⬜ pending | 11 |
 | 17 | [Frontend: notes + briefings pages](./17-frontend-notes-briefings.md) | ⬜ pending | 13 14 16 |
 | 18 | [Frontend: navbar + smoke test](./18-frontend-navbar-e2e.md) | ⬜ pending | 15 16 17 |
+| 19 | [Strategy overview page](./19-feature-strategy-page.md) | ⬜ pending | 01 (partial: 11 15) |
 
 ## Status legend
 - ✅ done

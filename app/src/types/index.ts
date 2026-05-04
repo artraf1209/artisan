@@ -117,10 +117,43 @@ export type Database = {
           max_positions: number
           position_frac: number
           active: boolean
+          goal_growth_pct: number | null
+          goal_months: number | null
+          risk_level: 'conservative' | 'moderate' | 'aggressive' | null
+          start_equity: number | null
           created_at: string
         }
         Insert: Omit<Database['public']['Tables']['strategies']['Row'], 'id' | 'created_at'>
         Update: Partial<Database['public']['Tables']['strategies']['Insert']>
+      }
+      universes: {
+        Row: {
+          id: string
+          strategy_id: string
+          symbol: string
+          added_at: string
+        }
+        Insert: Omit<Database['public']['Tables']['universes']['Row'], 'id' | 'added_at'>
+        Update: Partial<Database['public']['Tables']['universes']['Insert']>
+      }
+      indicator_values: {
+        Row: {
+          id: string
+          symbol: string
+          computed_at: string
+          rsi_14: number | null
+          macd_line: number | null
+          macd_signal: number | null
+          macd_hist: number | null
+          bb_upper: number | null
+          bb_mid: number | null
+          bb_lower: number | null
+          atr_14: number | null
+          sma_50: number | null
+          sma_200: number | null
+        }
+        Insert: Omit<Database['public']['Tables']['indicator_values']['Row'], 'id' | 'computed_at'>
+        Update: Partial<Database['public']['Tables']['indicator_values']['Insert']>
       }
       composite_scores: {
         Row: {
@@ -251,6 +284,8 @@ export type Alert = Database['public']['Tables']['alerts']['Row']
 export type Account = Database['public']['Tables']['accounts']['Row']
 export type PriceBar = Database['public']['Tables']['price_bars']['Row']
 export type Strategy = Database['public']['Tables']['strategies']['Row']
+export type Universe = Database['public']['Tables']['universes']['Row']
+export type IndicatorValues = Database['public']['Tables']['indicator_values']['Row']
 export type CompositeScore = Database['public']['Tables']['composite_scores']['Row']
 export type SignalEvent = Database['public']['Tables']['signal_events']['Row']
 export type TradeIntent = Database['public']['Tables']['trade_intents']['Row']

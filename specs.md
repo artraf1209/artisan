@@ -179,7 +179,7 @@ Three scoring pillars, each normalized to [0, 1]:
 |-------|---------|
 | `users` | Single admin user (UUID seeded in migration) |
 | `accounts` | Alpaca paper account link |
-| `strategies` | Strategy config: weights, thresholds, sizing rules |
+| `strategies` | Strategy config: weights, thresholds, sizing rules, **goal parameters** |
 | `universes` | Symbol universe per strategy (10 large-caps for Phase 0) |
 | `assets` | Symbol metadata (sector, exchange) |
 | `price_bars` | Daily OHLCV, partitioned by month |
@@ -254,7 +254,160 @@ All new variables added to: GitHub Actions repo secrets, `engine-py/.env` (gitig
 
 ---
 
-## 9. Open Questions
+## 9. Strategy Overview Page — Feature Spec
+
+**Route:** `/strategy`  
+**Nav label:** Strategy  
+**Purpose:** Single-page control room showing what the strategy is trying to achieve, which stocks are in scope and why, and the full lifecycle of every trade from signal to close.
+
+---
+
+### 9.1 Panel A — Strategy Goal
+
+Displays the high-level intent of the active strategy and tracks progress toward it.
+
+**Data source:** `strategies` table (goal fields below) + `accounts` table (current equity).
+
+**New columns added to `strategies` table** (included in Task 01 migration):
+
+| Column | Type | Default | Meaning |
+|--------|------|---------|---------|
+| `goal_growth_pct` | `numeric(6,2)` | `25.0` | Target portfolio growth in percent (e.g. 25 = +25%) |
+| `goal_months` | `int` | `12` | Months allocated to reach the target |
+| `risk_level` | `text` | `'moderate'` | One of `conservative`, `moderate`, `aggressive` |
+| `start_equity` | `numeric(18,2)` | `null` | Account equity when the strategy was activated (baseline) |
+
+**Displayed fields:**
+
+- **Target growth** — `goal_growth_pct`% in `goal_months` months (e.g. "25% in 12 months")
+- **Risk level** — badge: Conservative / Moderate / Aggressive with distinct colour
+- **Instruments** — derived from `risk_level`:
+  - Conservative → large-cap equities only, max 10 positions
+  - Moderate → large/mid-cap equities, max 15 positions
+  - Aggressive → any universe symbol, max 20 positions, smaller ATR multiplier on stops
+- **Current equity** — from `accounts.equity` (synced nightly by executor)
+- **Target equity** — `start_equity * (1 + goal_growth_pct / 100)`
+- **Progress bar** — `(current_equity - start_equity) / (target_equity - start_equity) * 100`, clamped to [0, 100]
+- **Days remaining** — computed from `strategies.created_at + goal_months months - today`
+- **P&L since start** — `current_equity - start_equity` in `$` and `%`
+
+If `start_equity` is null (strategy not yet activated): show a "Set baseline" prompt. If `accounts.equity` is null (account not yet synced): show dashes.
+
+---
+
+### 9.2 Panel B — Universe Analysis Thesis
+
+Structured view of every stock in the active strategy's universe. Explains **why** each stock is being tracked and **how it has performed** since inclusion.
+
+**Data sources:**
+- `universes` (universe membership + `added_at` date)
+- `composite_scores` (latest F/T/S scores per symbol)
+- `indicator_values` (latest computed indicators — used for the "indicator detail" tooltip)
+- `price_bars` (close price at `added_at` date and most recent close — used for trend %)
+
+**Table columns:**
+
+| Column | Source | Notes |
+|--------|--------|-------|
+| Symbol | `universes.symbol` | Clickable — links to trade notes for that symbol |
+| Sector | `assets.sector` | Shows "—" if asset metadata not yet loaded |
+| Added | `universes.added_at` | Date the symbol was added to the universe |
+| F-Score | `composite_scores.f_score` | Colour-coded bar: ≥0.65 green, 0.45–0.65 yellow, <0.45 red |
+| T-Score | `composite_scores.t_score` | Same colour logic |
+| S-Score | `composite_scores.s_score` | Same colour logic |
+| Composite | `composite_scores.composite` | Bold. Pillars-passed indicator (e.g. "2/3") |
+| Key indicators | `indicator_values` | Top signal per pillar: e.g. "RSI 71 · MACD ↑ · P/E 18x" |
+| Trend since added | `price_bars` | `(latest_close − close_at_added) / close_at_added × 100` — shown as `+3.2%` / `-1.1%` with colour |
+| Active signal | `signal_events` | Badge: Pending / Approved / None |
+
+**Empty states:**
+- If `universes` is empty (pre-migration): show the 10 hardcoded symbols with all scores as "—" and a "Run first ingestion to populate" notice.
+- If scores exist but price data is missing: show scores with trend as "—".
+
+**Interaction:** Clicking a row opens `/trades/notes/[signal_id]` for the latest signal for that symbol, or `/trades/queue` if one is pending approval.
+
+---
+
+### 9.3 Panel C — Trade Pipeline
+
+Three-column Kanban showing every trade in its current lifecycle stage.
+
+**Columns:**
+
+#### Waiting
+Signals that have been generated but not yet executed. Two sub-states shown inline:
+- **Pending approval** — `signal_events.status = 'pending'`. Needs human decision in `/trades/queue`.
+- **Approved, awaiting execution** — `signal_events.status = 'approved'` with a linked `trade_intents` row. Will be picked up on the next `daily-score-signal` GH Actions run.
+
+**Card fields:** Symbol · Direction (Long) · Entry price (stop_price as stop / target_price as TP) · Composite score badge · Time since generated
+
+#### In Market
+Open positions — trades that have been executed and not yet closed.
+
+**Primary data source:** `portfolio_positions` (Python hybrid engine).  
+**Fallback:** legacy `positions` table (TypeScript engine) — used when `portfolio_positions` is empty.
+
+**Card fields:** Symbol · Qty · Avg entry · Current price · Unrealized P&L in `$` and `%` (colour-coded) · Stop price · Target price · Days held (from `portfolio_positions.opened_at`)
+
+#### Closed
+Positions that have been fully exited.
+
+**Primary data source:** `trade_executions` where `status = 'filled'`, joined with `trade_intents` to get entry price.  
+**Fallback:** legacy `trades` table where `status = 'filled'` (TypeScript engine records).
+
+**Card fields:** Symbol · Side (Buy / Sell) · Entry price · Exit price · Qty · Realized P&L in `$` and `%` (colour-coded) · Closed date
+
+**Sorting:** Closed trades sorted by `filled_at desc` (most recent first). Max 50 shown with "Show all" link.
+
+---
+
+### 9.4 API Routes
+
+| Route | Method | Returns |
+|-------|--------|---------|
+| `/api/strategy/overview` | GET | Strategy goal + account equity + universe list with latest scores, indicators, and trend % |
+| `/api/strategy/trades` | GET | `{ waiting, in_market, closed }` — gracefully falls back to legacy tables |
+
+Both routes use the server-side Supabase client (anon key with RLS `select` policies). No auth required for Phase 0.
+
+---
+
+### 9.5 Frontend Components
+
+| Component | File | Notes |
+|-----------|------|-------|
+| `GoalPanel` | `components/strategy/GoalPanel.tsx` | Progress bar, equity numbers, risk badge |
+| `UniverseThesis` | `components/strategy/UniverseThesis.tsx` | Responsive table; score bars rendered as inline divs |
+| `TradePipeline` | `components/strategy/TradePipeline.tsx` | 3-column grid on desktop, stacked on mobile |
+| `TradeCard` | `components/strategy/TradeCard.tsx` | Shared card for all three pipeline columns |
+| `/strategy` page | `app/strategy/page.tsx` | Server Component; fetches both API routes, passes data to the three panels |
+
+**Nav change:** Add `{ href: '/strategy', label: 'Strategy', icon: Target }` to `Navbar.tsx`. The `Target` icon is available in `lucide-react`.
+
+---
+
+### 9.6 Schema change summary (adds to Task 01 migration)
+
+```sql
+-- Add goal columns to strategies table
+alter table public.strategies
+  add column if not exists goal_growth_pct  numeric(6,2)  not null default 25.0,
+  add column if not exists goal_months      int           not null default 12,
+  add column if not exists risk_level       text          not null default 'moderate'
+    check (risk_level in ('conservative','moderate','aggressive')),
+  add column if not exists start_equity     numeric(18,2);
+
+-- Update seed to include goal defaults
+update public.strategies
+set goal_growth_pct = 25.0,
+    goal_months     = 12,
+    risk_level      = 'moderate'
+where name = 'long_term_v0';
+```
+
+---
+
+## 10. Open Questions
 
 ### Answered
 - ~~Market data tier?~~ → IEX free tier on Alpaca for Phase 0; Polygon Starter ($29/mo) when needed

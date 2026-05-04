@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BarChart3, TrendingUp, Zap, ClipboardCheck, Newspaper } from 'lucide-react'
+import { BarChart3, TrendingUp, Zap, ClipboardCheck, Newspaper, Target } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const nav = [
@@ -11,6 +11,7 @@ const nav = [
   { href: '/trades/queue', label: 'Queue', icon: ClipboardCheck },
   { href: '/signals', label: 'Signals', icon: Zap },
   { href: '/briefings', label: 'Briefings', icon: Newspaper },
+  { href: '/strategy', label: 'Strategy', icon: Target },
 ]
 
 export default function Navbar() {
