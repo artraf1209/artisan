@@ -60,8 +60,15 @@ class FmpFundamentalsAdapter:
         return rows[0] if rows else {}
 
     def fetch_earnings_calendar(self, symbol: str) -> dict[str, Any]:
+        from datetime import date as _date
         rows = self._get("earnings-calendar", symbol=symbol)
-        return rows[0] if rows else {}
+        # FMP returns a market-wide calendar; filter to the requested symbol only
+        symbol_rows = [r for r in rows if r.get("symbol") == symbol]
+        if not symbol_rows:
+            return {}
+        today = _date.today().isoformat()
+        upcoming = [r for r in symbol_rows if r.get("date", "") >= today]
+        return min(upcoming, key=lambda r: r["date"]) if upcoming else symbol_rows[0]
 
     @staticmethod
     def _now_iso() -> str:
