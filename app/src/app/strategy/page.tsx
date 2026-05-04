@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { createServerClient } from '@/lib/supabase/server'
+import PageShell from '@/components/shared/PageShell'
 import GoalPanel from '@/components/strategy/GoalPanel'
 import UniverseThesis from '@/components/strategy/UniverseThesis'
 import TradePipeline from '@/components/strategy/TradePipeline'
@@ -254,12 +255,10 @@ export default async function StrategyPage() {
   }
 
   return (
-    <main className="min-h-screen px-4 pb-32 pt-8">
-      <div className="mx-auto max-w-5xl space-y-6">
-        <GoalPanel strategy={strategy} currentEquity={accountRes.data?.equity ?? null} />
-        <UniverseThesis rows={universe} />
-        <TradePipeline waiting={waiting} in_market={inMarket} closed={closed} />
-      </div>
-    </main>
+    <PageShell title="Strategy">
+      <GoalPanel strategy={strategy} currentEquity={accountRes.data?.equity ?? null} />
+      <UniverseThesis rows={universe} />
+      <TradePipeline waiting={waiting} in_market={inMarket} closed={closed} />
+    </PageShell>
   )
 }
