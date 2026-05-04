@@ -44,7 +44,7 @@ class IntentExecutor:
             self.db.table("trade_intents")
             .select("*")
             .eq("status", "scheduled")
-            .order("created_at", ascending=True)
+            .order("created_at", desc=False)
             .execute()
         )
         return response.data
