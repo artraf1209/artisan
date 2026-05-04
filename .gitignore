@@ -10,6 +10,8 @@ dist/
 out/
 *.tsbuildinfo
 bun.lock
+playwright-report/
+test-results/
 
 # Next.js
 .next/
@@ -31,6 +33,10 @@ fly.toml.local
 # macOS
 .DS_Store
 .AppleDouble
+
+# Local tooling
+.claude/
+compass_artifact*.md
 
 # Logs
 *.log

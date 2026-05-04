@@ -1,10 +1,12 @@
 import Link from 'next/link'
-import { BarChart3, TrendingUp, Zap, FileText, Settings } from 'lucide-react'
+import { BarChart3, TrendingUp, Zap, FileText, Settings, ClipboardCheck, Newspaper } from 'lucide-react'
 
 const nav = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3 },
   { href: '/trades', label: 'Trades', icon: TrendingUp },
+  { href: '/trades/queue', label: 'Queue', icon: ClipboardCheck },
   { href: '/signals', label: 'Signals', icon: Zap },
+  { href: '/briefings', label: 'Briefings', icon: Newspaper },
   { href: '/logs', label: 'Logs', icon: FileText },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]
