@@ -4,30 +4,86 @@
 
 @layer base {
   :root {
-    --background: 222 84% 5%;
-    --foreground: 210 40% 98%;
-    --card: 222 84% 7%;
-    --card-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 84% 5%;
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 217 91% 60%;
-    --radius: 0.5rem;
+    --background: 240 24% 6%;
+    --foreground: 36 20% 95%;
+    --card: 240 10% 16%;
+    --card-foreground: 36 18% 95%;
+    --primary: 36 18% 95%;
+    --primary-foreground: 240 18% 8%;
+    --muted: 240 9% 22%;
+    --muted-foreground: 240 9% 68%;
+    --accent: 240 9% 20%;
+    --accent-foreground: 36 18% 95%;
+    --destructive: 0 83% 61%;
+    --destructive-foreground: 36 18% 95%;
+    --border: 240 8% 23%;
+    --input: 240 8% 23%;
+    --ring: 36 18% 95%;
+    --radius: 1.35rem;
+    --profit: 152 62% 62%;
+    --loss: 2 74% 68%;
   }
 }
 
 @layer base {
+  html {
+    color-scheme: dark;
+  }
+
   * {
     @apply border-border;
   }
+
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    background-image:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.05), transparent 26%),
+      radial-gradient(circle at top right, rgba(111, 111, 121, 0.14), transparent 18%),
+      linear-gradient(180deg, rgba(18, 17, 24, 0.98), rgba(8, 8, 12, 1));
+    min-height: 100vh;
+    padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+  }
+
+  a,
+  button,
+  input,
+  textarea {
+    @apply outline-none;
+  }
+}
+
+@layer components {
+  .surface-panel {
+    @apply rounded-[2rem] border border-border/80 bg-card/90 shadow-[0_24px_60px_rgba(0,0,0,0.35)];
+    backdrop-filter: blur(22px);
+  }
+
+  .surface-soft {
+    @apply rounded-[1.7rem] border border-border/70 bg-card/70 shadow-[0_18px_45px_rgba(0,0,0,0.24)];
+    backdrop-filter: blur(18px);
+  }
+
+  .page-grid {
+    @apply grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-12;
+  }
+
+  .metric-value {
+    @apply text-5xl font-semibold tracking-[-0.06em] sm:text-6xl;
+  }
+
+  .text-profit {
+    color: hsl(var(--profit));
+  }
+
+  .text-loss {
+    color: hsl(var(--loss));
+  }
+
+  .bg-profit {
+    background-color: hsl(var(--profit));
+  }
+
+  .bg-loss {
+    background-color: hsl(var(--loss));
   }
 }

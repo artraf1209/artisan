@@ -7,19 +7,36 @@ export default function PortfolioCard({ positions }: { positions: Position[] }) 
   const isPositive = totalUnrealized >= 0
 
   return (
-    <div className="rounded-lg border border-border bg-card p-5 col-span-1 md:col-span-3">
-      <p className="text-sm text-muted-foreground mb-1">Unrealized P&L</p>
-      <div className="flex items-center gap-2">
+    <div className="surface-panel col-span-1 p-6 md:col-span-1 xl:col-span-5">
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Portfolio</p>
+          <p className="mt-2 text-sm text-muted-foreground">Open position exposure</p>
+        </div>
         {isPositive ? (
-          <TrendingUp size={20} className="text-profit" />
+          <TrendingUp size={22} className="text-profit" />
         ) : (
-          <TrendingDown size={20} className="text-loss" />
+          <TrendingDown size={22} className="text-loss" />
         )}
-        <span className={`text-3xl font-bold ${isPositive ? 'text-profit' : 'text-loss'}`}>
+      </div>
+      <div className="flex items-end gap-3">
+        <span className={`metric-value ${isPositive ? 'text-profit' : 'text-loss'}`}>
           {formatCurrency(totalUnrealized)}
         </span>
       </div>
-      <p className="text-xs text-muted-foreground mt-2">{positions.length} open position{positions.length !== 1 ? 's' : ''}</p>
+      <div className="mt-6 flex items-center justify-between rounded-[1.5rem] border border-border/70 bg-background/30 px-4 py-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Open positions</p>
+          <p className="text-sm text-muted-foreground">
+            {positions.length} active {positions.length === 1 ? 'name' : 'names'}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-2xl font-semibold tracking-[-0.05em] text-foreground">
+            {positions.length}
+          </p>
+        </div>
+      </div>
     </div>
   )
 }

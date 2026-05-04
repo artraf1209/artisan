@@ -1,5 +1,6 @@
-import Navbar from '@/components/shared/Navbar'
+import { FileText, Settings } from 'lucide-react'
 import ApprovalQueue from '@/components/trades/ApprovalQueue'
+import PageShell from '@/components/shared/PageShell'
 import { createServerClient } from '@/lib/supabase/server'
 import type { QueueSignal, ThesisAnalysis } from '@/types/hybrid'
 
@@ -30,18 +31,17 @@ export default async function TradeQueuePage() {
   })
 
   return (
-    <div className="min-h-screen bg-background">
-      <Navbar />
-      <main className="container mx-auto px-4 py-8 space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-bold text-foreground">Approval Queue</h1>
-          <p className="text-sm text-muted-foreground">
-            Review pending hybrid-engine signals before they become trade intents.
-          </p>
-          {error ? <p className="text-sm text-loss">{error.message}</p> : null}
-        </div>
+    <PageShell
+      eyebrow="Human decision lane"
+      title="Queue"
+      subtitle="Approve or reject pending hybrid-engine setups before they become executable trade intents."
+      actions={[
+        { href: '/briefings', label: 'Briefings', icon: FileText },
+        { href: '/settings', label: 'Settings', icon: Settings },
+      ]}
+    >
+        {error ? <p className="text-sm text-loss">{error.message}</p> : null}
         <ApprovalQueue signals={signals} />
-      </main>
-    </div>
+    </PageShell>
   )
 }

@@ -1,5 +1,6 @@
 import { createServerClient } from '@/lib/supabase/server'
-import Navbar from '@/components/shared/Navbar'
+import { ClipboardCheck, Newspaper } from 'lucide-react'
+import PageShell from '@/components/shared/PageShell'
 import TradeTable from '@/components/trades/TradeTable'
 
 export const dynamic = 'force-dynamic'
@@ -13,12 +14,16 @@ export default async function TradesPage() {
     .limit(100)
 
   return (
-    <div className="min-h-screen bg-background">
-      <Navbar />
-      <main className="container mx-auto px-4 py-8 space-y-6">
-        <h1 className="text-2xl font-bold text-foreground">Trade Log</h1>
+    <PageShell
+      eyebrow="Execution history"
+      title="Trades"
+      subtitle="A compact ledger of recent fills, direction, and price action across the paper account."
+      actions={[
+        { href: '/trades/queue', label: 'Approval Queue', icon: ClipboardCheck },
+        { href: '/briefings', label: 'Briefings', icon: Newspaper },
+      ]}
+    >
         <TradeTable trades={trades ?? []} />
-      </main>
-    </div>
+    </PageShell>
   )
 }

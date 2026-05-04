@@ -1,15 +1,20 @@
-import Navbar from '@/components/shared/Navbar'
+import { BarChart3, ClipboardCheck } from 'lucide-react'
+import PageShell from '@/components/shared/PageShell'
 
 export default function SettingsPage() {
   return (
-    <div className="min-h-screen bg-background">
-      <Navbar />
-      <main className="container mx-auto px-4 py-8 space-y-6">
-        <h1 className="text-2xl font-bold text-foreground">Settings</h1>
-        <div className="rounded-lg border border-border bg-card p-6 text-muted-foreground">
+    <PageShell
+      eyebrow="Workspace controls"
+      title="Settings"
+      subtitle="Configuration hooks for engine behavior, approvals, and account context."
+      actions={[
+        { href: '/dashboard', label: 'Dashboard', icon: BarChart3 },
+        { href: '/trades/queue', label: 'Approval Queue', icon: ClipboardCheck },
+      ]}
+    >
+        <div className="surface-panel p-6 text-muted-foreground">
           Engine configuration coming soon.
         </div>
-      </main>
-    </div>
+    </PageShell>
   )
 }

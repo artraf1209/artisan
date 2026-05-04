@@ -1,12 +1,30 @@
-import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import type { Metadata, Viewport } from 'next'
+import { Outfit } from 'next/font/google'
 import './globals.css'
+import PwaRegistration from '@/components/shared/PwaRegistration'
 
-const inter = Inter({ subsets: ['latin'] })
+const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit' })
 
 export const metadata: Metadata = {
-  title: 'Artisan — Trading Dashboard',
-  description: 'AI/ML-powered autonomous trading application',
+  title: 'Artisan',
+  description: 'Installable mobile-first trading dashboard for signals, approvals, and briefings.',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Artisan',
+  },
+  icons: {
+    icon: '/pwa-icon-192.svg',
+    apple: '/apple-icon',
+  },
+}
+
+export const viewport: Viewport = {
+  themeColor: '#0a0a0f',
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 }
 
 export default function RootLayout({
@@ -15,8 +33,11 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className="dark">
-      <body className={inter.className}>{children}</body>
+    <html lang="en">
+      <body className={outfit.className}>
+        <PwaRegistration />
+        {children}
+      </body>
     </html>
   )
 }

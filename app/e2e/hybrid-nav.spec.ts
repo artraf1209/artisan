@@ -2,15 +2,16 @@ import { expect, test } from '@playwright/test'
 
 test('hybrid pages are reachable from the navbar', async ({ page }) => {
   await page.goto('/dashboard')
+  const primaryNav = page.getByRole('navigation', { name: 'Primary' })
 
-  await page.getByRole('link', { name: /queue/i }).click()
-  await expect(page.getByRole('heading', { name: 'Approval Queue' })).toBeVisible()
+  await primaryNav.getByRole('link', { name: 'Queue', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Queue' })).toBeVisible()
   await expect(page.locator('main')).toContainText(
     /No pending approvals|Review pending hybrid-engine signals/i,
   )
 
-  await page.getByRole('link', { name: /briefings/i }).click()
-  await expect(page.getByRole('heading', { name: 'Daily Briefings' })).toBeVisible()
+  await primaryNav.getByRole('link', { name: 'Briefings', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Briefings' })).toBeVisible()
   await expect(page.locator('main')).toContainText(
     /No briefings yet|Morning summaries generated/i,
   )

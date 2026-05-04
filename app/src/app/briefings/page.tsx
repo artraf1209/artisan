@@ -1,6 +1,7 @@
-import Navbar from '@/components/shared/Navbar'
+import { ClipboardCheck, Settings } from 'lucide-react'
 import BriefingList from '@/components/briefings/BriefingList'
 import { createServerClient } from '@/lib/supabase/server'
+import PageShell from '@/components/shared/PageShell'
 import type { BriefingAnalysis } from '@/types/hybrid'
 
 export const dynamic = 'force-dynamic'
@@ -17,18 +18,17 @@ export default async function BriefingsPage() {
   const briefings = (data ?? []) as BriefingAnalysis[]
 
   return (
-    <div className="min-h-screen bg-background">
-      <Navbar />
-      <main className="container mx-auto px-4 py-8 space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-bold text-foreground">Daily Briefings</h1>
-          <p className="text-sm text-muted-foreground">
-            Morning summaries generated from recent signals, executions, and headlines.
-          </p>
-          {error ? <p className="text-sm text-loss">{error.message}</p> : null}
-        </div>
+    <PageShell
+      eyebrow="Analyst narrative"
+      title="Briefings"
+      subtitle="Daily generated context from signals, executions, and headline sentiment."
+      actions={[
+        { href: '/trades/queue', label: 'Approval Queue', icon: ClipboardCheck },
+        { href: '/settings', label: 'Settings', icon: Settings },
+      ]}
+    >
+        {error ? <p className="text-sm text-loss">{error.message}</p> : null}
         <BriefingList briefings={briefings} />
-      </main>
-    </div>
+    </PageShell>
   )
 }
