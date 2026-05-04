@@ -110,6 +110,35 @@ class FmpScreenerAdapter:
                     continue
                 raise
 
+        # Screener endpoints blocked on free tier — fall back to S&P 500 constituents.
+        # All S&P 500 members are NASDAQ/NYSE, market cap >> $1B, volume >> $5M, and
+        # have been public for many years — they satisfy our universe criteria without
+        # needing per-symbol API calls.
+        try:
+            sp500 = self._get("api/v3/sp500_constituent")
+            if sp500:
+                logger.info(
+                    "Screener endpoints unavailable (%s); falling back to S&P 500 constituents (%d stocks)",
+                    ", ".join(errors),
+                    len(sp500),
+                )
+                # Normalise to the shape screen() expects: symbol + ipoDate proxy
+                rows = []
+                for r in sp500:
+                    sym = r.get("symbol")
+                    if not sym:
+                        continue
+                    # Use a fixed old date: S&P 500 membership implies the company is
+                    # established, regardless of when it joined the index.
+                    rows.append({
+                        "symbol": sym,
+                        "ipoDate": "2000-01-01",
+                        "marketCap": None,  # unknown — rely on index membership as proxy
+                    })
+                return rows
+        except Exception:
+            logger.warning("S&P 500 constituent fallback also failed", exc_info=True)
+
         joined = ", ".join(errors) if errors else "no_compatible_endpoint"
         raise FmpScreenerUnavailableError(
             f"FMP screener unavailable for current account; attempts={joined}"
