@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 
 interface ExecuteTradePayload {
-  signalId: string
+  signalId?: string
+  intentId?: string
   symbol: string
   side: 'buy' | 'sell'
   quantity: number
@@ -9,7 +10,15 @@ interface ExecuteTradePayload {
   limitPrice?: number
 }
 
-Deno.serve(async (req) => {
+interface TradeResponse {
+  trade?: Record<string, unknown>
+  error?: string
+  error_type?: string
+}
+
+Deno.serve(async (req): Promise<Response> => {
+  let response: TradeResponse = {}
+
   try {
     const payload: ExecuteTradePayload = await req.json()
 
@@ -42,8 +51,35 @@ Deno.serve(async (req) => {
     })
 
     if (!orderRes.ok) {
-      const err = await orderRes.text()
-      throw new Error(`Alpaca order failed: ${err}`)
+      const errText = await orderRes.text()
+      
+      // Determine error type
+      let errorType = 'other'
+      const errLower = errText.toLowerCase()
+      
+      // Market closed errors
+      if (errLower.includes('market closed') || 
+          errLower.includes('outside regular trading hours') ||
+          errLower.includes('cannot open') ||
+          errLower.includes('40157')) {
+        errorType = 'market_closed'
+      }
+      // Insufficient balance
+      else if (errLower.includes('insufficient') || 
+               errLower.includes('42202') ||
+               errLower.includes('balance')) {
+        errorType = 'insufficient_balance'
+      }
+      
+      response = { 
+        error: errText, 
+        error_type: errorType 
+      }
+      
+      return new Response(JSON.stringify(response), {
+        status: orderRes.status,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     const order = await orderRes.json()
@@ -67,17 +103,35 @@ Deno.serve(async (req) => {
 
     if (error) throw error
 
-    // Mark signal as executed
-    await supabase
-      .from('signals')
-      .update({ executed: true })
-      .eq('id', payload.signalId)
+    // Mark signal as executed (if signalId provided)
+    if (payload.signalId) {
+      await supabase
+        .from('signals')
+        .update({ executed: true })
+        .eq('id', payload.signalId)
+    }
 
-    return new Response(JSON.stringify({ trade }), {
+    // Update trade_intents status (if intentId provided)
+    if (payload.intentId) {
+      const intentStatus = order.status === 'filled' ? 'filled' : 'submitted'
+      await supabase
+        .from('trade_intents')
+        .update({ status: intentStatus })
+        .eq('id', payload.intentId)
+    }
+
+    response = { trade }
+    
+    return new Response(JSON.stringify(response), {
       headers: { 'Content-Type': 'application/json' },
     })
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
+    response = { 
+      error: String(err), 
+      error_type: 'other' 
+    }
+    
+    return new Response(JSON.stringify(response), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     })

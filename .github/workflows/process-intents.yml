@@ -1,0 +1,33 @@
+name: Process Intents
+
+on:
+  schedule:
+    # Runs every 5 minutes during market hours (9:30 AM - 4:00 PM ET = 14:30 - 20:00 UTC)
+    # Cron: minute(*/5), hour(14-19), day(1-5), month(*), year(*)
+    - cron: '*/5 14-20 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  process-intents:
+    name: Process scheduled trade intents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run process intents
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.process_intents
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          LOG_LEVEL: INFO

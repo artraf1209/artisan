@@ -62,22 +62,92 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: updateError.message }, { status: 500 })
   }
 
-  const { error: intentError } = await supabase.from('trade_intents').insert({
-    signal_id: signal.id,
-    account_id: account?.id ?? DEFAULT_ACCOUNT_ID,
-    symbol: signal.symbol,
-    side: signal.direction === 'long' ? 'buy' : 'sell',
-    quantity,
-    dollar_value: dollarValue,
-    order_type: 'market',
-    limit_price: null,
-    stop_price: signal.stop_price,
-    status: 'pending',
-  })
+  const { data: intent, error: intentError } = await supabase
+    .from('trade_intents')
+    .insert({
+      signal_id: signal.id,
+      account_id: account?.id ?? DEFAULT_ACCOUNT_ID,
+      symbol: signal.symbol,
+      side: signal.direction === 'long' ? 'buy' : 'sell',
+      quantity,
+      dollar_value: dollarValue,
+      order_type: 'market',
+      limit_price: null,
+      stop_price: signal.stop_price,
+      status: 'pending',
+    })
+    .select()
+    .single()
 
   if (intentError) {
     return NextResponse.json({ error: intentError.message }, { status: 500 })
   }
 
-  return NextResponse.json({ ok: true })
+  const intentId = intent?.id
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+
+  let executionStatus = 'pending'
+  let executionError: string | null = null
+
+  try {
+    const execRes = await fetch(`${supabaseUrl}/functions/v1/execute-trade`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        intentId: intentId,
+        signalId: signal.id,
+        symbol: signal.symbol,
+        side: signal.direction === 'long' ? 'buy' : 'sell',
+        quantity: quantity,
+        orderType: 'market',
+      }),
+    })
+
+    const execResult = await execRes.json()
+
+    if (execRes.ok && !execResult.error) {
+      executionStatus = execResult.trade?.status === 'filled' ? 'filled' : 'submitted'
+    } else {
+      const errorType = execResult.error_type || 'other'
+      executionError = execResult.error
+
+      if (errorType === 'market_closed') {
+        executionStatus = 'scheduled'
+      } else {
+        executionStatus = 'rejected'
+      }
+    }
+  } catch (execErr) {
+    executionStatus = 'scheduled'
+    executionError = String(execErr)
+  }
+
+  const { error: statusError } = await supabase
+    .from('trade_intents')
+    .update({ status: executionStatus })
+    .eq('id', intentId)
+
+  if (executionStatus === 'rejected' || executionStatus === 'scheduled') {
+    await supabase.from('audit_log').insert({
+      actor: 'approve-route',
+      action: executionStatus === 'rejected' ? 'execute_rejected' : 'execute_scheduled',
+      entity: 'trade_intents',
+      entity_id: intentId,
+      payload: {
+        signal_id: signal.id,
+        symbol: signal.symbol,
+        error: executionError,
+      },
+    })
+  }
+
+  return NextResponse.json({ 
+    ok: true, 
+    executed: executionStatus === 'filled' || executionStatus === 'submitted',
+    status: executionStatus,
+  })
 }
