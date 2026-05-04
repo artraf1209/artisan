@@ -7,6 +7,7 @@ from typing import Any
 from artisan.config import settings
 from artisan.db.client import get_client
 from artisan.jobs.nightly_ingest import load_universe, write_audit_log
+from artisan.llm.thesis_analyst import ThesisAnalyst
 from artisan.pipeline import SignalPipeline
 from artisan.scorers import CompositeScorer, FundamentalScorer, SentimentScorer, TechnicalScorer
 
@@ -64,6 +65,11 @@ def run_daily_score_signal(*, db=None, now: datetime | None = None) -> dict[str,
             summary["signals_created"] += 1
         else:
             summary["signals_skipped"] += 1
+
+    thesis_summary = ThesisAnalyst(db=db).run(now=now)
+    summary["theses_created"] = thesis_summary["theses_created"]
+    summary["theses_failed"] = thesis_summary["theses_failed"]
+    summary["thesis_signals_skipped"] = thesis_summary["signals_skipped"]
 
     write_audit_log(
         db,

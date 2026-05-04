@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import artisan.jobs.daily_score_signal as daily_score_signal
 from artisan.jobs.daily_score_signal import run_daily_score_signal
 
 
@@ -163,7 +164,17 @@ class FakeDB:
         raise AssertionError(f"Unexpected table: {table_name}")
 
 
-def test_daily_score_signal_creates_pending_signal_summary() -> None:
+def test_daily_score_signal_creates_pending_signal_summary(monkeypatch) -> None:
+    class FakeThesisAnalyst:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        def run(self, *, now):
+            assert now == datetime(2026, 5, 4, 13, 30, tzinfo=UTC)
+            return {"theses_created": 1, "theses_failed": 0, "signals_skipped": 0}
+
+    monkeypatch.setattr(daily_score_signal, "ThesisAnalyst", FakeThesisAnalyst)
+
     summary = run_daily_score_signal(
         db=FakeDB(),
         now=datetime(2026, 5, 4, 13, 30, tzinfo=UTC),
@@ -173,3 +184,5 @@ def test_daily_score_signal_creates_pending_signal_summary() -> None:
     assert summary["indicators"] == 1
     assert summary["composite_scores"] == 1
     assert summary["signals_created"] == 1
+    assert summary["theses_created"] == 1
+    assert summary["theses_failed"] == 0

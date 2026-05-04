@@ -67,11 +67,11 @@ class ThesisAnalyst:
         self.client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self.system_prompt = SYSTEM_PROMPT
 
-    def fetch_pending_signals(self) -> list[dict[str, Any]]:
+    def fetch_reviewable_signals(self) -> list[dict[str, Any]]:
         response = (
             self.db.table("signal_events")
             .select("*")
-            .eq("status", "pending")
+            .in_("status", ["pending", "approved"])
             .order("created_at", desc=False)
             .execute()
         )
@@ -80,11 +80,15 @@ class ThesisAnalyst:
     def fetch_existing_thesis_signal_ids(self) -> set[str]:
         response = (
             self.db.table("llm_analyses")
-            .select("signal_id")
+            .select("signal_id, content")
             .eq("analysis_type", "thesis")
             .execute()
         )
-        return {row["signal_id"] for row in response.data if row.get("signal_id")}
+        return {
+            row["signal_id"]
+            for row in response.data
+            if row.get("signal_id") and (row.get("content") or "").strip()
+        }
 
     def fetch_recent_headlines(self, symbol: str, now: datetime | None = None) -> list[dict[str, Any]]:
         now = now or datetime.now(UTC)
@@ -112,7 +116,7 @@ class ThesisAnalyst:
         headlines_block = "\n".join(headline_lines) if headline_lines else "- No recent headlines available."
 
         return f"""
-Write a brief thesis note for this pending paper-trading signal.
+Write a brief thesis note for this review-queue paper-trading signal.
 
 Symbol: {signal["symbol"]}
 Direction: {signal["direction"]}
@@ -158,6 +162,8 @@ Requirements:
             or _usage_value(usage, "cache_read_tokens")
         )
         content = _first_text_block(getattr(message, "content", ""))
+        if not content:
+            raise ValueError(f"Model returned empty thesis content for signal {signal['id']}")
 
         return {
             "analysis_type": "thesis",
@@ -181,38 +187,56 @@ Requirements:
 
     def run(self, *, now: datetime | None = None, force: bool = False) -> dict[str, Any]:
         now = now or datetime.now(UTC)
-        pending_signals = self.fetch_pending_signals()
+        reviewable_signals = self.fetch_reviewable_signals()
         existing_signal_ids = set() if force else self.fetch_existing_thesis_signal_ids()
 
         created = 0
         skipped = 0
-        for signal in pending_signals:
+        failed = 0
+        for signal in reviewable_signals:
             if signal["id"] in existing_signal_ids:
                 skipped += 1
                 continue
 
-            headlines = self.fetch_recent_headlines(signal["symbol"], now=now)
-            thesis_row = self.generate_thesis(signal, headlines)
-            self.save_thesis(thesis_row)
-            created += 1
+            try:
+                headlines = self.fetch_recent_headlines(signal["symbol"], now=now)
+                thesis_row = self.generate_thesis(signal, headlines)
+                self.save_thesis(thesis_row)
+                created += 1
 
-            write_audit_log(
-                self.db,
-                actor="system",
-                action="thesis_create",
-                entity="llm_analyses",
-                entity_id=signal["id"],
-                payload={
-                    "signal_id": signal["id"],
-                    "symbol": signal["symbol"],
-                    "model": thesis_row["model"],
-                },
-            )
+                write_audit_log(
+                    self.db,
+                    actor="system",
+                    action="thesis_create",
+                    entity="llm_analyses",
+                    entity_id=signal["id"],
+                    payload={
+                        "signal_id": signal["id"],
+                        "symbol": signal["symbol"],
+                        "model": thesis_row["model"],
+                    },
+                )
+            except Exception as exc:
+                failed += 1
+                logger.exception("Failed to generate thesis for %s", signal["symbol"])
+                write_audit_log(
+                    self.db,
+                    actor="system",
+                    action="thesis_create_failed",
+                    entity="llm_analyses",
+                    entity_id=signal["id"],
+                    payload={
+                        "signal_id": signal["id"],
+                        "symbol": signal["symbol"],
+                        "error": str(exc),
+                    },
+                )
 
         summary = {
-            "pending_signals": len(pending_signals),
+            "signals_considered": len(reviewable_signals),
             "theses_created": created,
             "signals_skipped": skipped,
+            "theses_failed": failed,
             "run_at": now.isoformat(),
         }
         logger.info("Thesis analyst summary: %s", summary)

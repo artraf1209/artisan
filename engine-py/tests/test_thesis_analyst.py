@@ -23,6 +23,11 @@ class FakeSelectQuery:
             self.db.news_symbol = value
         return self
 
+    def in_(self, column: str, values):
+        if self.table_name == "signal_events" and column == "status":
+            self.db.signal_statuses = list(values)
+        return self
+
     def gte(self, _column: str, _value: str):
         return self
 
@@ -36,7 +41,12 @@ class FakeSelectQuery:
         if self.inserted_row is not None:
             return type("Response", (), {"data": [self.inserted_row]})()
         if self.table_name == "signal_events":
-            return type("Response", (), {"data": self.db.pending_signals})()
+            rows = self.db.pending_signals
+            if self.db.signal_statuses is not None:
+                rows = [row for row in rows if row.get("status") in self.db.signal_statuses]
+            elif self.db.signal_status is not None:
+                rows = [row for row in rows if row.get("status") == self.db.signal_status]
+            return type("Response", (), {"data": rows})()
         if self.table_name == "llm_analyses":
             return type("Response", (), {"data": self.db.existing_analyses})()
         if self.table_name == "news_articles":
@@ -68,6 +78,7 @@ class FakeDB:
                 "atr_at_signal": 5.75,
                 "earnings_blackout": False,
                 "created_at": "2026-05-04T13:30:00+00:00",
+                "status": "pending",
             }
         ]
         self.existing_analyses: list[dict] = []
@@ -81,6 +92,7 @@ class FakeDB:
         ]
         self.inserts: list[dict] = []
         self.signal_status = None
+        self.signal_statuses = None
         self.analysis_type = None
         self.news_symbol = None
 
@@ -119,6 +131,30 @@ class FakeClient:
         self.messages = FakeMessagesAPI()
 
 
+class BlankThenValidMessagesAPI:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            return type(
+                "BlankMessage",
+                (),
+                {
+                    "model": "claude-haiku-4-5-20251001",
+                    "usage": FakeUsage(),
+                    "content": [],
+                },
+            )()
+        return FakeMessage()
+
+
+class BlankThenValidClient:
+    def __init__(self) -> None:
+        self.messages = BlankThenValidMessagesAPI()
+
+
 def test_thesis_analyst_creates_one_thesis_per_pending_signal() -> None:
     db = FakeDB()
     client = FakeClient()
@@ -136,7 +172,7 @@ def test_thesis_analyst_creates_one_thesis_per_pending_signal() -> None:
 
 def test_thesis_analyst_skips_existing_thesis_rows() -> None:
     db = FakeDB()
-    db.existing_analyses = [{"signal_id": "signal-1"}]
+    db.existing_analyses = [{"signal_id": "signal-1", "content": "Existing thesis"}]
     client = FakeClient()
     analyst = ThesisAnalyst(db=db, client=client)
 
@@ -145,6 +181,51 @@ def test_thesis_analyst_skips_existing_thesis_rows() -> None:
     assert summary["theses_created"] == 0
     assert summary["signals_skipped"] == 1
     assert client.messages.calls == []
+
+
+def test_thesis_analyst_backfills_approved_signal_without_thesis() -> None:
+    db = FakeDB()
+    db.pending_signals[0]["status"] = "approved"
+    client = FakeClient()
+    analyst = ThesisAnalyst(db=db, client=client)
+
+    summary = analyst.run(now=datetime(2026, 5, 4, 14, 0, tzinfo=UTC))
+
+    assert summary["signals_considered"] == 1
+    assert summary["theses_created"] == 1
+
+
+def test_thesis_analyst_retries_blank_existing_thesis_content() -> None:
+    db = FakeDB()
+    db.existing_analyses = [{"signal_id": "signal-1", "content": "   "}]
+    client = FakeClient()
+    analyst = ThesisAnalyst(db=db, client=client)
+
+    summary = analyst.run(now=datetime(2026, 5, 4, 14, 0, tzinfo=UTC))
+
+    assert summary["theses_created"] == 1
+    assert len(client.messages.calls) == 1
+
+
+def test_thesis_analyst_skips_blank_model_output_and_continues() -> None:
+    db = FakeDB()
+    db.pending_signals.append(
+        {
+            **db.pending_signals[0],
+            "id": "signal-2",
+            "symbol": "MSFT",
+        }
+    )
+    client = BlankThenValidClient()
+    analyst = ThesisAnalyst(db=db, client=client)
+
+    summary = analyst.run(now=datetime(2026, 5, 4, 14, 0, tzinfo=UTC))
+
+    assert summary["theses_created"] == 1
+    assert summary["theses_failed"] == 1
+    thesis_inserts = [item for item in db.inserts if item["table"] == "llm_analyses"]
+    assert len(thesis_inserts) == 1
+    assert thesis_inserts[0]["row"]["signal_id"] == "signal-2"
 
 
 def test_build_user_prompt_uses_actual_signal_inputs() -> None:
@@ -162,6 +243,7 @@ def test_build_user_prompt_uses_actual_signal_inputs() -> None:
         "atr_at_signal": 5.75,
         "earnings_blackout": False,
         "created_at": "2026-05-04T13:30:00+00:00",
+        "status": "pending",
     }
     prompt = ThesisAnalyst.build_user_prompt(
         signal,
