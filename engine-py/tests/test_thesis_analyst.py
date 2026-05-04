@@ -23,11 +23,6 @@ class FakeSelectQuery:
             self.db.news_symbol = value
         return self
 
-    def in_(self, column: str, values):
-        if self.table_name == "signal_events" and column == "status":
-            self.db.signal_statuses = list(values)
-        return self
-
     def gte(self, _column: str, _value: str):
         return self
 
@@ -42,9 +37,7 @@ class FakeSelectQuery:
             return type("Response", (), {"data": [self.inserted_row]})()
         if self.table_name == "signal_events":
             rows = self.db.pending_signals
-            if self.db.signal_statuses is not None:
-                rows = [row for row in rows if row.get("status") in self.db.signal_statuses]
-            elif self.db.signal_status is not None:
+            if self.db.signal_status is not None:
                 rows = [row for row in rows if row.get("status") == self.db.signal_status]
             return type("Response", (), {"data": rows})()
         if self.table_name == "llm_analyses":
@@ -92,7 +85,6 @@ class FakeDB:
         ]
         self.inserts: list[dict] = []
         self.signal_status = None
-        self.signal_statuses = None
         self.analysis_type = None
         self.news_symbol = None
 
@@ -183,9 +175,9 @@ def test_thesis_analyst_skips_existing_thesis_rows() -> None:
     assert client.messages.calls == []
 
 
-def test_thesis_analyst_backfills_approved_signal_without_thesis() -> None:
+def test_thesis_analyst_backfills_non_pending_signal_without_thesis() -> None:
     db = FakeDB()
-    db.pending_signals[0]["status"] = "approved"
+    db.pending_signals[0]["status"] = "rejected"
     client = FakeClient()
     analyst = ThesisAnalyst(db=db, client=client)
 

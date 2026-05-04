@@ -67,11 +67,10 @@ class ThesisAnalyst:
         self.client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self.system_prompt = SYSTEM_PROMPT
 
-    def fetch_reviewable_signals(self) -> list[dict[str, Any]]:
+    def fetch_signals(self) -> list[dict[str, Any]]:
         response = (
             self.db.table("signal_events")
             .select("*")
-            .in_("status", ["pending", "approved"])
             .order("created_at", desc=False)
             .execute()
         )
@@ -116,7 +115,7 @@ class ThesisAnalyst:
         headlines_block = "\n".join(headline_lines) if headline_lines else "- No recent headlines available."
 
         return f"""
-Write a brief thesis note for this review-queue paper-trading signal.
+Write a brief thesis note for this paper-trading signal.
 
 Symbol: {signal["symbol"]}
 Direction: {signal["direction"]}
@@ -187,7 +186,7 @@ Requirements:
 
     def run(self, *, now: datetime | None = None, force: bool = False) -> dict[str, Any]:
         now = now or datetime.now(UTC)
-        reviewable_signals = self.fetch_reviewable_signals()
+        reviewable_signals = self.fetch_signals()
         existing_signal_ids = set() if force else self.fetch_existing_thesis_signal_ids()
 
         created = 0
