@@ -8,20 +8,21 @@ jobs:
   supabase:
     name: Supabase migrations + functions
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      - name: Link Supabase project
+        run: supabase link --project-ref "$PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
       - name: Push migrations
-        run: supabase db push
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push --linked
       - name: Deploy edge functions
-        run: supabase functions deploy
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase functions deploy --project-ref "$PROJECT_ID"
 
   # Vercel deploy is handled automatically by the Vercel GitHub integration.
   # Add a vercel-deploy job here only if you prefer CLI-based deploys:
