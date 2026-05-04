@@ -2,7 +2,9 @@ name: Daily Score Signal
 
 on:
   schedule:
-    - cron: '30 13 * * 1-5'
+    # Runs at 10pm UTC (5pm EST) Monday-Friday
+    # - Uses data from prior evening's nightly ingest
+    - cron: '0 10 * * 1-5'
   workflow_dispatch:
 
 jobs:

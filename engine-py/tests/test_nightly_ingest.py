@@ -105,7 +105,7 @@ def test_run_nightly_ingest_orchestrates_all_stages() -> None:
         prices_adapter=prices,
         fundamentals_adapter=fundamentals,
         news_adapter=news,
-        now=datetime(2026, 5, 4, 2, 0, tzinfo=UTC),
+        now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),  # Within FMP quota window (9pm UTC)
         refresh_universe_from_screener=False,
     )
 
@@ -154,6 +154,7 @@ def test_run_nightly_ingest_allows_zero_refresh_targets_when_budgeted(monkeypatc
     fundamentals = FakeFundamentalsAdapter()
     news = FakeNewsAdapter()
 
+    # Force time to be within window (21:00 UTC = 4pm EST)
     monkeypatch.setattr(
         nightly_ingest,
         "settings",
@@ -165,10 +166,113 @@ def test_run_nightly_ingest_allows_zero_refresh_targets_when_budgeted(monkeypatc
         prices_adapter=prices,
         fundamentals_adapter=fundamentals,
         news_adapter=news,
-        now=datetime(2026, 5, 4, 2, 0, tzinfo=UTC),
+        now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),  # Within window
         refresh_universe_from_screener=False,
     )
 
     assert summary["fundamental_targets"] == 0
     assert summary["fundamental_rows"] == 0
     assert fundamentals.synced == []
+
+
+def test_fmp_quota_guard_blocks_pre_reset_window(monkeypatch) -> None:
+    from artisan.jobs.nightly_ingest import check_fmp_quota_guard, is_within_fmp_quota_window
+    
+    # Configure reset at 20:00 UTC (8pm), buffer 60min = allow at 21:00
+    monkeypatch.setattr(
+        nightly_ingest,
+        "settings",
+        replace(
+            nightly_ingest.settings,
+            fmp_quota_reset_hour_utc=20,
+            fmp_quota_reset_minute_utc=0,
+            fmp_quota_buffer_minutes=60,
+            force_pre_reset_ingest=False,
+        ),
+    )
+    
+    # 20:59 UTC should be blocked (pre-reset)
+    result = is_within_fmp_quota_window(datetime(2026, 5, 4, 20, 59, tzinfo=UTC))
+    assert result is False
+    
+    should_proceed, reason = check_fmp_quota_guard(
+        datetime(2026, 5, 4, 20, 59, tzinfo=UTC)
+    )
+    assert should_proceed is False
+    assert reason == "skipped_pre_reset_window"
+
+
+def test_fmp_quota_guard_allows_post_reset_window(monkeypatch) -> None:
+    from artisan.jobs.nightly_ingest import check_fmp_quota_guard, is_within_fmp_quota_window
+    
+    monkeypatch.setattr(
+        nightly_ingest,
+        "settings",
+        replace(
+            nightly_ingest.settings,
+            fmp_quota_reset_hour_utc=20,
+            fmp_quota_reset_minute_utc=0,
+            fmp_quota_buffer_minutes=60,
+            force_pre_reset_ingest=False,
+        ),
+    )
+    
+    # 21:00 UTC should be allowed (within window)
+    result = is_within_fmp_quota_window(datetime(2026, 5, 4, 21, 0, tzinfo=UTC))
+    assert result is True
+    
+    should_proceed, reason = check_fmp_quota_guard(
+        datetime(2026, 5, 4, 21, 0, tzinfo=UTC)
+    )
+    assert should_proceed is True
+    assert reason == "within_quota_window"
+
+
+def test_fmp_quota_guard_force_override_bypasses(monkeypatch) -> None:
+    from artisan.jobs.nightly_ingest import check_fmp_quota_guard
+    
+    monkeypatch.setattr(
+        nightly_ingest,
+        "settings",
+        replace(
+            nightly_ingest.settings,
+            fmp_quota_reset_hour_utc=20,
+            fmp_quota_reset_minute_utc=0,
+            fmp_quota_buffer_minutes=60,
+            force_pre_reset_ingest=True,  # Force override via config
+        ),
+    )
+    
+    # Even at 20:59 (pre-reset), force should allow
+    should_proceed, reason = check_fmp_quota_guard(
+        datetime(2026, 5, 4, 20, 59, tzinfo=UTC),
+        force_override=True,  # Or via function argument
+    )
+    assert should_proceed is True
+    assert reason == "forced_pre_reset=true"
+
+
+def test_run_nightly_ingest_returns_skip_on_pre_reset(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nightly_ingest,
+        "settings",
+        replace(
+            nightly_ingest.settings,
+            fmp_quota_reset_hour_utc=20,
+            fmp_quota_reset_minute_utc=0,
+            fmp_quota_buffer_minutes=60,
+            force_pre_reset_ingest=False,
+        ),
+    )
+    
+    # Run at 20:59 (pre-reset) should return no-op
+    summary = run_nightly_ingest(
+        db=FakeDB(),
+        now=datetime(2026, 5, 4, 20, 59, tzinfo=UTC),
+        refresh_universe_from_screener=False,
+    )
+    
+    assert summary["status"] == "skipped_pre_reset_window"
+    assert summary["symbols"] == 0
+    assert summary["price_rows"] == 0
+    assert summary["fundamental_rows"] == 0

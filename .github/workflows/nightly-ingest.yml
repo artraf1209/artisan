@@ -2,8 +2,18 @@ name: Nightly Ingest
 
 on:
   schedule:
-    - cron: '0 2 * * 1-5'
+    # Runs at 9pm UTC (4pm EST) Sunday-Thursday
+    # - FMP quota resets at 8pm UTC (3pm EST)
+    # - Allowed window starts at 9pm UTC (4pm EST) after 60min buffer
+    # - Sunday run feeds Monday briefing/scoring
+    # - Mon-Thu runs feed next day's briefing/scoring
+    - cron: '0 21 * * 0-4'
   workflow_dispatch:
+    inputs:
+      force_pre_reset:
+        description: 'Bypass pre-reset guard and run even before 9pm UTC'
+        required: false
+        default: 'false'
 
 jobs:
   nightly-ingest:
@@ -35,3 +45,4 @@ jobs:
           ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
           ADMIN_USER_ID: ${{ secrets.ADMIN_USER_ID }}
           LOG_LEVEL: INFO
+          FORCE_PRE_RESET_INGEST: ${{ inputs.force_pre_reset || 'false' }}

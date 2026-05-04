@@ -10,10 +10,12 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         GitHub Actions                               │
 │                                                                      │
-│  nightly-ingest.yml       daily-score-signal.yml  daily-briefing.yml │
-│  (2 AM UTC weeknights)    (1:30 PM UTC weekdays)  (11:30 AM UTC)     │
+│  nightly-ingest.yml         daily-score-signal.yml     daily-briefing.yml   │
+│  (9pm UTC / 4pm EST)     (10pm UTC / 5pm EST)  (10pm UTC / 5pm EST)│
+│  Sun-Thu after FMP reset   Mon-Fri after ingest   Mon-Fri after ingest │
 │                                                                      │
 │  Python engine-py/artisan:                                           │
+│  - FMP quota guard (post-reset at 8pm UTC / 3pm EST)                 │
 │  - data adapters (Alpaca prices, FMP fundamentals, Finnhub news)     │
 │  - F/T/S scoring (RSI, P/E, VADER)                                   │
 │  - confluence gate + veto rules                                      │
@@ -127,23 +129,26 @@ Three scoring pillars, each normalized to [0, 1]:
 ### Python hybrid engine (Phase 0)
 
 ```
-1. nightly-ingest (2 AM UTC weeknights):
-   alpaca_prices → price_bars
-   fmp_fundamentals → fundamentals (includes earnings_date)
-   finnhub_news → news_articles (VADER scored inline)
+1. nightly-ingest (9pm UTC / 4pm EST Sun-Thu):
+   - FMP quota guard blocks pre-reset (before 9pm UTC)
+   - alpaca_prices → price_bars
+   - fmp_fundamentals → fundamentals (includes earnings_date)
+   - finnhub_news → news_articles (VADER scored inline)
 
-2. daily-briefing (11:30 AM UTC / 6:30 AM ET):
-   Claude Haiku → llm_analyses (analysis_type='briefing')
+2. daily-briefing (10pm UTC / 5pm EST Mon-Fri):
+   - Uses data from prior evening's ingest
+   - Claude Haiku → llm_analyses (analysis_type='briefing')
 
-3. daily-score-signal (1:30 PM UTC / 9:30 AM ET):
-   indicator_values ← computed from price_bars (RSI, MACD, ATR, BB, SMA, ADX, OBV, vol_ratio)
-   composite_scores ← F+T+S weighted sum
-   factor_scores ← sector-neutral multi-factor model (Value, Quality, Momentum, Low Vol, Growth)
-   entry_signals ← ranked-shortlist timing gates and sizing
-   confluence_gate + veto_rules → signal_events (status='pending')
-   Claude Haiku → llm_analyses (analysis_type='thesis') per signal
-   → read approved trade_intents from prior run
-   → AlpacaAdapter.place_order → trade_executions, portfolio_positions
+3. daily-score-signal (10pm UTC / 5pm EST Mon-Fri):
+   - Uses data from prior evening's ingest
+   - indicator_values ← computed from price_bars (RSI, MACD, ATR, BB, SMA, ADX, OBV, vol_ratio)
+   - composite_scores ← F+T+S weighted sum
+   - factor_scores ← sector-neutral multi-factor model (Value, Quality, Momentum, Low Vol, Growth)
+   - entry_signals ← ranked-shortlist timing gates and sizing
+   - confluence_gate + veto_rules → signal_events (status='pending')
+   - Claude Haiku → llm_analyses (analysis_type='thesis') per signal
+   - → read approved trade_intents from prior run
+   - AlpacaAdapter.place_order → trade_executions, portfolio_positions
 
 4. Human approval (Next.js /trades/queue):
    POST /api/queue/[id]/approve

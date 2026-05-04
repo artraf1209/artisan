@@ -25,6 +25,10 @@ class Settings:
     screener_top_n: int
     fundamentals_refresh_limit: int
     price_history_lookback_days: int
+    fmp_quota_reset_hour_utc: int
+    fmp_quota_reset_minute_utc: int
+    fmp_quota_buffer_minutes: int
+    force_pre_reset_ingest: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -42,6 +46,12 @@ class Settings:
                 return default
             return int(value)
 
+        def as_bool(key: str, default: bool = False) -> bool:
+            value = os.getenv(key, "").lower()
+            if value == "":
+                return default
+            return value in ("true", "1", "yes")
+
         settings = cls(
             supabase_url=require("SUPABASE_URL"),
             supabase_service_role_key=require("SUPABASE_SERVICE_ROLE_KEY"),
@@ -58,6 +68,10 @@ class Settings:
             screener_top_n=as_int("SCREENER_TOP_N", 40),
             fundamentals_refresh_limit=as_int("FUNDAMENTALS_REFRESH_LIMIT", 20),
             price_history_lookback_days=as_int("PRICE_HISTORY_LOOKBACK_DAYS", 1900),
+            fmp_quota_reset_hour_utc=as_int("FMP_QUOTA_RESET_HOUR_UTC", 20),  # 8pm UTC = 3pm EST
+            fmp_quota_reset_minute_utc=as_int("FMP_QUOTA_RESET_MINUTE_UTC", 0),
+            fmp_quota_buffer_minutes=as_int("FMP_QUOTA_BUFFER_MINUTES", 60),
+            force_pre_reset_ingest=as_bool("FORCE_PRE_RESET_INGEST", False),
         )
         if missing:
             missing_list = ", ".join(missing)
