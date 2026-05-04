@@ -22,7 +22,7 @@ jobs:
       - name: Push migrations
         run: supabase db push --linked
       - name: Deploy edge functions
-        run: supabase functions deploy --project-ref "$PROJECT_ID"
+        run: supabase functions deploy --project-ref "$PROJECT_ID" --import-map ./supabase/functions/import_map.json
 
   # Vercel deploy is handled automatically by the Vercel GitHub integration.
   # Add a vercel-deploy job here only if you prefer CLI-based deploys:
