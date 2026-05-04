@@ -10,12 +10,14 @@ from artisan.config import settings
 
 logger = logging.getLogger(__name__)
 
-SCREENER_TOP_N = 40  # max symbols to ingest per run (API budget guard)
+
+class FmpScreenerUnavailableError(RuntimeError):
+    """Raised when no compatible screener endpoint is usable for the current account."""
 
 
 def _is_retryable_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code == 429 or exc.response.status_code >= 500
+        return exc.response.status_code >= 500
     return isinstance(exc, httpx.TransportError)
 
 
@@ -23,7 +25,7 @@ class FmpScreenerAdapter:
     def __init__(
         self,
         http_client: httpx.Client | None = None,
-        base_url: str = "https://financialmodelingprep.com/stable",
+        base_url: str = "https://financialmodelingprep.com",
     ) -> None:
         self.http_client = http_client or httpx.Client(timeout=30.0)
         self.base_url = base_url.rstrip("/")
@@ -41,29 +43,13 @@ class FmpScreenerAdapter:
         payload = response.json()
         return payload if isinstance(payload, list) else []
 
-    def screen(self, top_n: int = SCREENER_TOP_N) -> list[str]:
+    def screen(self, top_n: int | None = None) -> list[str]:
         """
         Return top-N symbols by market cap passing universe definition filters.
-        Falls back to empty list (caller uses existing DB universe) if endpoint unavailable.
+        Raises when no supported screener endpoint is currently usable.
         """
-        try:
-            rows = self._get(
-                "stock-screener",
-                marketCapMoreThan=1_000_000_000,
-                volumeMoreThan=5_000_000,
-                exchange="nasdaq,nyse",
-                country="US",
-                isActivelyTrading=True,
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (404, 403):
-                logger.warning(
-                    "FMP screener endpoint not available on current plan (%s). "
-                    "Using existing DB universe.",
-                    e.response.status_code,
-                )
-                return []
-            raise
+        top_n = top_n or settings.screener_top_n
+        rows = self._screen_rows()
 
         # Keep only stocks with 5+ years of trading history
         cutoff = (datetime.now(timezone.utc) - timedelta(days=5 * 365)).date()
@@ -83,3 +69,48 @@ class FmpScreenerAdapter:
         symbols = [r["symbol"] for r in qualified[:top_n] if r.get("symbol")]
         logger.info("Screener: %d qualified symbols, returning top %d", len(qualified), len(symbols))
         return symbols
+
+    def _screen_rows(self) -> list[dict]:
+        attempts = [
+            (
+                "stable",
+                "stable/stock-screener",
+                {
+                    "marketCapMoreThan": 1_000_000_000,
+                    "volumeMoreThan": 5_000_000,
+                    "exchange": "nasdaq,nyse",
+                    "country": "US",
+                    "isActivelyTrading": True,
+                },
+            ),
+            (
+                "v3",
+                "api/v3/stock-screener",
+                {
+                    "marketCapMoreThan": 1_000_000_000,
+                    "volumeMoreThan": 5_000_000,
+                    "exchange": "NASDAQ,NYSE",
+                    "country": "US",
+                    "isActivelyTrading": True,
+                },
+            ),
+        ]
+        errors: list[str] = []
+
+        for label, path, params in attempts:
+            try:
+                rows = self._get(path, **params)
+                logger.info("Universe screener using FMP %s endpoint", label)
+                return rows
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                errors.append(f"{label}:{status}")
+                if status in (403, 404, 429):
+                    logger.warning("FMP %s screener unavailable (%s)", label, status)
+                    continue
+                raise
+
+        joined = ", ".join(errors) if errors else "no_compatible_endpoint"
+        raise FmpScreenerUnavailableError(
+            f"FMP screener unavailable for current account; attempts={joined}"
+        )

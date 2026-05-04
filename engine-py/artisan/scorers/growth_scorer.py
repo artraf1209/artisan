@@ -29,7 +29,7 @@ def compute_growth_scores(
       EPSGrowth_3y   = (eps[t] / eps[t-3y])^(1/3) - 1   (only if both positive)
       FCFGrowth_3y   = (fcf[t] / fcf[t-3y])^(1/3) - 1   (only if both positive)
 
-    income_history: {symbol: [list of annual rows, newest first]}
+    income_history: {symbol: [latest annual fundamentals rows from DB, newest first]}.
     fund_df: latest fundamentals per symbol (index=symbol).
     """
     sales_growth: dict[str, float] = {}
@@ -49,10 +49,8 @@ def compute_growth_scores(
         if eg is not None:
             eps_growth[symbol] = eg
 
-        # FCF from current fundamentals (latest cash flow)
         fcf_now = fund_df.loc[symbol, "fcf"] if symbol in fund_df.index and "fcf" in fund_df.columns else None
-        # Approximate historical FCF as operatingCF - capex from income history rows (not always available)
-        fcf_old = oldest.get("freeCashFlow") or oldest.get("operatingCashFlow")
+        fcf_old = oldest.get("fcf")
         if fcf_now is not None and fcf_old is not None:
             fg = _cagr(float(fcf_now), float(fcf_old), 3)
             if fg is not None:

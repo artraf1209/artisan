@@ -132,6 +132,8 @@ export type Database = {
           strategy_id: string
           symbol: string
           added_at: string
+          active: boolean
+          screened_at: string | null
         }
         Insert: Omit<Database['public']['Tables']['universes']['Row'], 'id' | 'added_at'>
         Update: Partial<Database['public']['Tables']['universes']['Insert']>
@@ -151,9 +153,59 @@ export type Database = {
           atr_14: number | null
           sma_50: number | null
           sma_200: number | null
+          adx_14: number | null
+          obv: number | null
+          vol_ratio: number | null
         }
         Insert: Omit<Database['public']['Tables']['indicator_values']['Row'], 'id' | 'computed_at'>
         Update: Partial<Database['public']['Tables']['indicator_values']['Insert']>
+      }
+      factor_scores: {
+        Row: {
+          id: string
+          symbol: string
+          strategy_id: string | null
+          scored_at: string
+          value_z: number | null
+          quality_z: number | null
+          momentum_z: number | null
+          low_vol_z: number | null
+          growth_z: number | null
+          value_prev: number | null
+          quality_prev: number | null
+          momentum_prev: number | null
+          low_vol_prev: number | null
+          growth_prev: number | null
+          composite_z: number | null
+          rank: number | null
+          is_new: boolean
+          hard_filter_pass: boolean
+          sector: string | null
+        }
+        Insert: Omit<Database['public']['Tables']['factor_scores']['Row'], 'id'>
+        Update: Partial<Database['public']['Tables']['factor_scores']['Insert']>
+      }
+      entry_signals: {
+        Row: {
+          id: string
+          symbol: string
+          strategy_id: string | null
+          evaluated_at: string
+          gate_market: boolean | null
+          gate_trend: boolean | null
+          setup_type: string | null
+          gate_confirmed: boolean | null
+          entry_price: number | null
+          stop_price: number | null
+          target_price: number | null
+          atr: number | null
+          r_multiple: number | null
+          shares: number | null
+          dollar_risk: number | null
+          actionable: boolean
+        }
+        Insert: Omit<Database['public']['Tables']['entry_signals']['Row'], 'id'>
+        Update: Partial<Database['public']['Tables']['entry_signals']['Insert']>
       }
       composite_scores: {
         Row: {
@@ -286,6 +338,8 @@ export type PriceBar = Database['public']['Tables']['price_bars']['Row']
 export type Strategy = Database['public']['Tables']['strategies']['Row']
 export type Universe = Database['public']['Tables']['universes']['Row']
 export type IndicatorValues = Database['public']['Tables']['indicator_values']['Row']
+export type FactorScore = Database['public']['Tables']['factor_scores']['Row']
+export type EntrySignal = Database['public']['Tables']['entry_signals']['Row']
 export type CompositeScore = Database['public']['Tables']['composite_scores']['Row']
 export type SignalEvent = Database['public']['Tables']['signal_events']['Row']
 export type TradeIntent = Database['public']['Tables']['trade_intents']['Row']

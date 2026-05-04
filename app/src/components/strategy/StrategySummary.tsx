@@ -45,12 +45,19 @@ const UNIVERSE_RULES = [
   '5+ years of financials',
 ]
 
+function titleCase(value: string) {
+  return value
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
 export default function StrategySummary({ strategies, selected, funnel }: Props) {
   return (
     <div className="surface-panel p-5 space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground mb-1">Strategy</p>
+          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground mb-1">Strategy Summary</p>
           <StrategyDropdown
             strategies={strategies.map(({ id, name }) => ({ id, name }))}
             selectedId={selected.id}
@@ -62,7 +69,7 @@ export default function StrategySummary({ strategies, selected, funnel }: Props)
           </span>
           {selected.risk_level && (
             <span className="rounded-full border border-border/70 bg-accent/70 px-3 py-1 text-xs font-medium text-muted-foreground uppercase tracking-widest">
-              {selected.risk_level}
+              {titleCase(selected.risk_level)}
             </span>
           )}
         </div>

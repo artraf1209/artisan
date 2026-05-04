@@ -19,17 +19,23 @@ logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.I
 logger = logging.getLogger(__name__)
 
 
-def _load_price_df(db, symbols: list[str], days: int = 400) -> pd.DataFrame:
+def _load_price_df(
+    db,
+    symbols: list[str],
+    days: int = settings.price_history_lookback_days,
+) -> pd.DataFrame:
     """Load price bars for all symbols into a wide DataFrame (index=date, cols=symbol)."""
-    from datetime import date, timedelta
+    from datetime import timedelta
+
     start = (datetime.now(UTC).date() - timedelta(days=days)).isoformat()
+    fetch_limit = max((len(symbols) + 1) * max(days + 50, 600), 1_000)
     rows = (
         db.table("price_bars")
         .select("symbol, bar_time, close")
         .in_("symbol", symbols + ["SPY"])
         .gte("bar_time", start)
         .order("bar_time", desc=False)
-        .limit(len(symbols) * 500)
+        .limit(fetch_limit)
         .execute()
         .data
     )
@@ -50,7 +56,7 @@ def _load_latest_fundamentals(db, symbols: list[str]) -> list[dict[str, Any]]:
         .select("*")
         .in_("symbol", symbols)
         .order("fetched_at", desc=True)
-        .limit(len(symbols) * 3)
+        .limit(max(len(symbols) * 6, 24))
         .execute()
         .data
     )
@@ -73,25 +79,31 @@ def _load_sectors(db, symbols: list[str]) -> dict[str, str]:
     return {r["symbol"]: (r["sector"] or "Unknown") for r in rows}
 
 
-def _load_income_history(
-    fundamentals_adapter: Any, symbols: list[str]
-) -> dict[str, list[dict]]:
-    out: dict[str, list[dict]] = {}
-    for sym in symbols:
-        try:
-            out[sym] = fundamentals_adapter.fetch_income_history_rows(sym)
-        except Exception:
-            out[sym] = []
-    return out
+def _load_fundamental_history(db, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
+    rows = (
+        db.table("fundamentals")
+        .select("symbol, period_end, period_type, revenue, eps, fcf")
+        .in_("symbol", symbols)
+        .eq("period_type", "annual")
+        .order("period_end", desc=True)
+        .limit(max(len(symbols) * 8, 32))
+        .execute()
+        .data
+    )
+
+    history: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        symbol = row["symbol"]
+        bucket = history.setdefault(symbol, [])
+        if len(bucket) < 4:
+            bucket.append(row)
+    return history
 
 
 def run_daily_score_signal(*, db=None, now: datetime | None = None) -> dict[str, Any]:
     db = db or get_client()
     now = now or datetime.now(UTC)
     run_at = now.isoformat()
-
-    from artisan.adapters.fmp_fundamentals import FmpFundamentalsAdapter
-    fundamentals_adapter = FmpFundamentalsAdapter(db=db)
 
     technical = TechnicalScorer(db=db)
     fundamental = FundamentalScorer(db=db)
@@ -110,6 +122,7 @@ def run_daily_score_signal(*, db=None, now: datetime | None = None) -> dict[str,
         "signals_skipped": 0,
         "factor_scores": 0,
         "entry_signals": 0,
+        "entry_shortlist": 0,
         "theses_created": 0,
     }
 
@@ -145,21 +158,23 @@ def run_daily_score_signal(*, db=None, now: datetime | None = None) -> dict[str,
         else:
             summary["signals_skipped"] += 1
 
+    price_wide = _load_price_df(db, symbols)
+    factor_rows: list[dict[str, Any]] = []
+
     # ── New 5-factor scoring (cross-sectional) ────────────────────────────
     try:
-        price_wide = _load_price_df(db, symbols)
         stock_price_df = price_wide.drop(columns=["SPY"], errors="ignore")
         spy_series = price_wide["SPY"] if "SPY" in price_wide.columns else pd.Series(dtype=float)
 
         fundamentals_list = _load_latest_fundamentals(db, symbols)
         sectors = _load_sectors(db, symbols)
-        income_history = _load_income_history(fundamentals_adapter, symbols)
+        fundamental_history = _load_fundamental_history(db, symbols)
 
         factor_rows = score_universe(
             db=db,
             strategy_id=settings.strategy_id,
             fundamentals=fundamentals_list,
-            income_history=income_history,
+            income_history=fundamental_history,
             price_df=stock_price_df,
             spy_series=spy_series,
             sectors=sectors,
@@ -175,19 +190,39 @@ def run_daily_score_signal(*, db=None, now: datetime | None = None) -> dict[str,
         account = (
             db.table("accounts")
             .select("equity")
-            .eq("id", settings.__dict__.get("account_id", "00000000-0000-0000-0000-000000000002"))
+            .eq("id", settings.account_id)
             .limit(1)
             .execute()
             .data
         )
         capital = float((account[0]["equity"] if account else None) or 100_000)
 
+        shortlist_limit = int(strategy.get("max_positions") or 10) if isinstance(strategy, dict) else 10
+        shortlist_symbols = [
+            row["symbol"]
+            for row in sorted(
+                (
+                    row
+                    for row in factor_rows
+                    if row.get("hard_filter_pass") and row.get("rank") is not None
+                ),
+                key=lambda row: int(row["rank"]),
+            )
+            if int(row["rank"]) <= shortlist_limit
+        ]
+        summary["entry_shortlist"] = len(shortlist_symbols)
+
         spy_df: pd.DataFrame | None = None
         if "SPY" in (price_wide.columns if not price_wide.empty else []):
-            spy_df = price_wide[["SPY"]].rename(columns={"SPY": "close"}).reset_index().rename(columns={"index": "bar_time"})
+            spy_df = (
+                price_wide[["SPY"]]
+                .rename(columns={"SPY": "close"})
+                .reset_index()
+                .rename(columns={"index": "bar_time"})
+            )
 
         entry_rows = []
-        for symbol in symbols:
+        for symbol in shortlist_symbols:
             snapshot = (technical_results.get(symbol) or {}).get("_snapshot") or {}
             row = evaluate_entry(
                 symbol=symbol,

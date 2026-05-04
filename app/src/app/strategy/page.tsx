@@ -36,6 +36,11 @@ function dedupeBySymbol<T extends { symbol: string }>(rows: T[]): T[] {
   })
 }
 
+function delta(current: number | null, previous: number | null): number | null {
+  if (current == null || previous == null) return null
+  return current - previous
+}
+
 export default async function StrategyPage({
   searchParams,
 }: {
@@ -73,6 +78,7 @@ export default async function StrategyPage({
     factorHistoryRes,
     entryHistoryRes,
     signalHistoryRes,
+    strategySignalIdsRes,
     waitingRes,
     portfolioRes,
     executionsRes,
@@ -104,6 +110,11 @@ export default async function StrategyPage({
       .limit(100),
     supabase
       .from('signal_events')
+      .select('id')
+      .eq('strategy_id', selected.id)
+      .limit(500),
+    supabase
+      .from('signal_events')
       .select('id, symbol, direction, composite_score, f_score, t_score, s_score, stop_price, target_price, status, created_at, trade_intents(id, status)')
       .eq('strategy_id', selected.id)
       .in('status', ['pending', 'approved'])
@@ -115,7 +126,7 @@ export default async function StrategyPage({
       .order('opened_at', { ascending: false }),
     supabase
       .from('trade_executions')
-      .select('id, status, filled_qty, filled_price, filled_at, intent_id, trade_intents(symbol, side, quantity, dollar_value, stop_price)')
+      .select('id, status, filled_qty, filled_price, filled_at, intent_id, trade_intents(signal_id, symbol, side, quantity, dollar_value, stop_price)')
       .eq('status', 'filled')
       .order('filled_at', { ascending: false })
       .limit(50),
@@ -157,6 +168,11 @@ export default async function StrategyPage({
   const factorBySymbol = Object.fromEntries(
     factorRows.map((row) => [row.symbol as string, row]),
   )
+  const selectedSignalIds = new Set(
+    ((strategySignalIdsRes.data ?? []) as { id: string }[]).map((row) => row.id),
+  )
+  const shortlistLimit = Number(selected.max_positions ?? DEFAULT_STRATEGY.max_positions)
+  const isDefaultStrategy = selected.id === DEFAULT_STRATEGY.id
 
   const symbolSet = new Set<string>([
     ...universeRows.map((row) => row.symbol as string),
@@ -188,10 +204,15 @@ export default async function StrategyPage({
     rank: row.rank as number | null,
     composite_z: row.composite_z as number | null,
     value_z: row.value_z as number | null,
+    value_delta: delta(row.value_z as number | null, row.value_prev as number | null),
     quality_z: row.quality_z as number | null,
+    quality_delta: delta(row.quality_z as number | null, row.quality_prev as number | null),
     momentum_z: row.momentum_z as number | null,
+    momentum_delta: delta(row.momentum_z as number | null, row.momentum_prev as number | null),
     low_vol_z: row.low_vol_z as number | null,
+    low_vol_delta: delta(row.low_vol_z as number | null, row.low_vol_prev as number | null),
     growth_z: row.growth_z as number | null,
+    growth_delta: delta(row.growth_z as number | null, row.growth_prev as number | null),
     hard_filter_pass: Boolean(row.hard_filter_pass),
     is_new: Boolean(row.is_new),
     setup_type: (entryBySymbol[row.symbol as string] as { setup_type?: string | null } | undefined)?.setup_type ?? null,
@@ -199,23 +220,25 @@ export default async function StrategyPage({
       (latestSignalBySymbol[row.symbol as string] as { status?: string } | undefined)?.status ?? null,
   }))
 
-  const timingRows = entryRows.map((row) => ({
-    symbol: row.symbol as string,
-    name: (assetsBySymbol[row.symbol as string] as { name?: string | null } | undefined)?.name ?? null,
-    rank: (factorBySymbol[row.symbol as string] as { rank?: number | null } | undefined)?.rank ?? null,
-    gate_market: row.gate_market as boolean | null,
-    gate_trend: row.gate_trend as boolean | null,
-    setup_type: row.setup_type as string | null,
-    gate_confirmed: Boolean(row.gate_confirmed),
-    entry_price: row.entry_price as number | null,
-    stop_price: row.stop_price as number | null,
-    target_price: row.target_price as number | null,
-    atr: row.atr as number | null,
-    r_multiple: row.r_multiple as number | null,
-    shares: row.shares as number | null,
-    dollar_risk: row.dollar_risk as number | null,
-    actionable: Boolean(row.actionable),
-  }))
+  const timingRows = entryRows
+    .map((row) => ({
+      symbol: row.symbol as string,
+      name: (assetsBySymbol[row.symbol as string] as { name?: string | null } | undefined)?.name ?? null,
+      rank: (factorBySymbol[row.symbol as string] as { rank?: number | null } | undefined)?.rank ?? null,
+      gate_market: row.gate_market as boolean | null,
+      gate_trend: row.gate_trend as boolean | null,
+      setup_type: row.setup_type as string | null,
+      gate_confirmed: Boolean(row.gate_confirmed),
+      entry_price: row.entry_price as number | null,
+      stop_price: row.stop_price as number | null,
+      target_price: row.target_price as number | null,
+      atr: row.atr as number | null,
+      r_multiple: row.r_multiple as number | null,
+      shares: row.shares as number | null,
+      dollar_risk: row.dollar_risk as number | null,
+      actionable: Boolean(row.actionable),
+    }))
+    .filter((row) => row.rank != null && row.rank <= shortlistLimit)
 
   const waiting: WaitingTrade[] = ((waitingRes.data ?? []) as Record<string, unknown>[]).map((row) => ({
     id: row.id as string,
@@ -234,7 +257,11 @@ export default async function StrategyPage({
       : Boolean(row.trade_intents),
   }))
 
-  const hybridPositions = (portfolioRes.data ?? []) as Record<string, unknown>[]
+  const hybridPositions = ((portfolioRes.data ?? []) as Record<string, unknown>[]).filter((row) => {
+    const signalId = row.signal_id as string | null | undefined
+    if (signalId) return selectedSignalIds.has(signalId)
+    return isDefaultStrategy
+  })
   const legacyPositions = (legacyPositionsRes.data ?? []) as Record<string, unknown>[]
 
   const inMarket: InMarketTrade[] =
@@ -255,24 +282,32 @@ export default async function StrategyPage({
           opened_at: row.opened_at as string,
           source: 'hybrid' as const,
         }))
-      : legacyPositions.map((row) => ({
-          id: row.id as string,
-          symbol: row.symbol as string,
-          quantity: row.quantity as number,
-          avg_entry_price: row.avg_entry_price as number,
-          current_price: row.current_price as number | null,
-          unrealized_pnl: row.unrealized_pnl as number | null,
-          unrealized_pnl_pct:
-            row.unrealized_pnl != null && row.avg_entry_price
-              ? ((row.unrealized_pnl as number) / ((row.avg_entry_price as number) * (row.quantity as number))) * 100
-              : null,
-          stop_price: null,
-          target_price: null,
-          opened_at: row.updated_at as string,
-          source: 'legacy' as const,
-        }))
+      : isDefaultStrategy
+        ? legacyPositions.map((row) => ({
+            id: row.id as string,
+            symbol: row.symbol as string,
+            quantity: row.quantity as number,
+            avg_entry_price: row.avg_entry_price as number,
+            current_price: row.current_price as number | null,
+            unrealized_pnl: row.unrealized_pnl as number | null,
+            unrealized_pnl_pct:
+              row.unrealized_pnl != null && row.avg_entry_price
+                ? ((row.unrealized_pnl as number) / ((row.avg_entry_price as number) * (row.quantity as number))) * 100
+                : null,
+            stop_price: null,
+            target_price: null,
+            opened_at: row.updated_at as string,
+            source: 'legacy' as const,
+          }))
+        : []
 
-  const hybridExecutions = (executionsRes.data ?? []) as Record<string, unknown>[]
+  const hybridExecutions = ((executionsRes.data ?? []) as Record<string, unknown>[]).filter((row) => {
+    const intentRaw = row.trade_intents
+    const intent = (Array.isArray(intentRaw) ? intentRaw[0] : intentRaw) as Record<string, unknown> | null
+    const signalId = intent?.signal_id as string | null | undefined
+    if (signalId) return selectedSignalIds.has(signalId)
+    return isDefaultStrategy
+  })
   const legacyTrades = (legacyTradesRes.data ?? []) as Record<string, unknown>[]
 
   const closed: ClosedTrade[] =
@@ -306,23 +341,25 @@ export default async function StrategyPage({
             source: 'hybrid' as const,
           }
         })
-      : legacyTrades.map((row) => ({
-          id: row.id as string,
-          symbol: row.symbol as string,
-          side: row.side as string,
-          quantity: row.quantity as number,
-          entry_price: row.price as number,
-          exit_price: row.price as number,
-          pnl: null,
-          pnl_pct: null,
-          closed_at: row.filled_at as string | null,
-          source: 'legacy' as const,
-        }))
+      : isDefaultStrategy
+        ? legacyTrades.map((row) => ({
+            id: row.id as string,
+            symbol: row.symbol as string,
+            side: row.side as string,
+            quantity: row.quantity as number,
+            entry_price: row.price as number,
+            exit_price: row.price as number,
+            pnl: null,
+            pnl_pct: null,
+            closed_at: row.filled_at as string | null,
+            source: 'legacy' as const,
+          }))
+        : []
 
   const funnel = {
     screened: universeRows.length || symbolSet.size,
     hard_filtered: stockRows.filter((row) => row.hard_filter_pass).length,
-    scored: stockRows.filter((row) => row.composite_z != null).length,
+    scored: stockRows.filter((row) => row.rank != null).length,
     in_portfolio: inMarket.length,
   }
 

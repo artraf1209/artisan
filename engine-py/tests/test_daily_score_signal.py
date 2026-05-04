@@ -2,124 +2,26 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pandas as pd
+
 import artisan.jobs.daily_score_signal as daily_score_signal
 from artisan.jobs.daily_score_signal import run_daily_score_signal
 
 
-class FakeUniverseQuery:
-    def __init__(self, rows: list[dict]) -> None:
-        self.rows = rows
-
-    def select(self, _fields: str):
-        return self
-
-    def eq(self, _column: str, _value: str):
-        return self
-
-    def order(self, _column: str):
-        return self
-
-    def limit(self, _limit: int):
-        return self
-
-    def execute(self):
-        return type("Response", (), {"data": self.rows})()
-
-
-class FakeStrategyQuery(FakeUniverseQuery):
-    pass
-
-
 class FakeInsertQuery:
-    def __init__(self, rows: list[dict]) -> None:
-        self.rows = rows
-
-    def insert(self, row: dict):
-        self.rows.append(row)
-        return self
-
-    def execute(self):
-        return type("Response", (), {"data": []})()
-
-
-class FakePriceQuery:
-    def __init__(self, symbol: str) -> None:
-        self.symbol = symbol
-
-    def select(self, _fields: str):
-        return self
-
-    def eq(self, _column: str, _value: str):
-        return self
-
-    def order(self, _column: str, desc: bool = False):
-        return self
-
-    def limit(self, _limit: int):
-        return self
-
-    def execute(self):
-        if self.symbol == "fundamentals":
-            return type(
-                "Response",
-                (),
-                {"data": [{"symbol": "AAPL", "pe_ratio": 18, "pb_ratio": 4, "roe": 0.22, "debt_equity": 0.6, "earnings_date": "2026-05-20"}]},
-            )()
-        return type(
-            "Response",
-            (),
-            {
-                "data": [
-                    {
-                        "symbol": "AAPL",
-                        "bar_time": f"2025-01-{(idx % 28) + 1:02d}T00:00:00+00:00",
-                        "open": 100 + idx,
-                        "high": 101 + idx,
-                        "low": 99 + idx,
-                        "close": 100 + idx,
-                        "volume": 1000 + idx,
-                        "vwap": 100 + idx,
-                    }
-                    for idx in range(220)
-                ]
-            },
-        )()
-
-
-class FakeNewsQuery:
-    def select(self, _fields: str):
-        return self
-
-    def eq(self, _column: str, _value: str):
-        return self
-
-    def gte(self, _column: str, _value: str):
-        return self
-
-    def order(self, _column: str, desc: bool = True):
-        return self
-
-    def execute(self):
-        return type(
-            "Response",
-            (),
-            {
-                "data": [
-                    {
-                        "headline": "Positive demand",
-                        "summary": "Demand improved",
-                        "vader_compound": 0.7,
-                        "published_at": "2026-05-04T10:00:00+00:00",
-                    }
-                ]
-            },
-        )()
-
-
-class FakeUpsertQuery:
-    def __init__(self, table_name: str, saves: list[dict]) -> None:
+    def __init__(self, table_name: str, saves: list[dict], data: list[dict] | None = None) -> None:
         self.table_name = table_name
         self.saves = saves
+        self.data = data or []
+
+    def select(self, _fields: str):
+        return self
+
+    def eq(self, _column: str, _value):
+        return self
+
+    def limit(self, _limit: int):
+        return self
 
     def upsert(self, row, on_conflict: str):
         self.saves.append({"table": self.table_name, "row": row, "on_conflict": on_conflict})
@@ -130,8 +32,7 @@ class FakeUpsertQuery:
         return self
 
     def execute(self):
-        row = self.saves[-1]["row"]
-        return type("Response", (), {"data": [row] if isinstance(row, dict) else []})()
+        return type("Response", (), {"data": self.data})()
 
 
 class FakeDB:
@@ -139,32 +40,91 @@ class FakeDB:
         self.saves: list[dict] = []
 
     def table(self, table_name: str):
-        if table_name == "universes":
-            return FakeUniverseQuery([{"symbol": "AAPL"}])
-        if table_name == "strategies":
-            return FakeStrategyQuery(
-                [
-                    {
-                        "id": "strategy-1",
-                        "f_weight": 0.5,
-                        "t_weight": 0.25,
-                        "s_weight": 0.25,
-                        "threshold": 0.55,
-                    }
-                ]
-            )
-        if table_name == "price_bars":
-            return FakePriceQuery("price_bars")
-        if table_name == "fundamentals":
-            return FakePriceQuery("fundamentals")
-        if table_name == "news_articles":
-            return FakeNewsQuery()
-        if table_name in {"indicator_values", "composite_scores", "signal_events", "audit_log"}:
-            return FakeUpsertQuery(table_name, self.saves)
+        if table_name == "accounts":
+            return FakeInsertQuery(table_name, self.saves, data=[{"equity": 125000}])
+        if table_name in {"entry_signals", "audit_log"}:
+            return FakeInsertQuery(table_name, self.saves)
         raise AssertionError(f"Unexpected table: {table_name}")
 
 
-def test_daily_score_signal_creates_pending_signal_summary(monkeypatch) -> None:
+def test_daily_score_signal_only_generates_entry_signals_for_ranked_shortlist(monkeypatch) -> None:
+    entry_symbols: list[str] = []
+
+    class FakeTechnicalScorer:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        def score_symbol(self, symbol: str, computed_at: str):
+            close_series = pd.Series([100 + idx for idx in range(260)], dtype=float)
+            return {
+                "symbol": symbol,
+                "computed_at": computed_at,
+                "rsi_14": 55.0,
+                "macd_line": 1.0,
+                "macd_signal": 0.5,
+                "macd_hist": 0.5,
+                "bb_upper": 120.0,
+                "bb_mid": 110.0,
+                "bb_lower": 100.0,
+                "atr_14": 2.0,
+                "sma_50": 115.0,
+                "sma_200": 105.0,
+                "adx_14": 25.0,
+                "obv": 5000.0,
+                "vol_ratio": 1.5,
+                "close": float(close_series.iloc[-1]),
+                "t_score": 0.8,
+                "_snapshot": {
+                    "close": float(close_series.iloc[-1]),
+                    "rsi_14": 55.0,
+                    "macd_hist": 0.5,
+                    "atr_14": 2.0,
+                    "sma_50": 115.0,
+                    "sma_200": 105.0,
+                    "adx_14": 25.0,
+                    "vol_ratio": 1.5,
+                    "bb_upper": 120.0,
+                    "bb_mid": 110.0,
+                    "bb_lower": 100.0,
+                    "_close_series": close_series,
+                    "_high_series": close_series + 1,
+                    "_low_series": close_series - 1,
+                    "_obv_series": pd.Series([1000 + idx for idx in range(260)], dtype=float),
+                    "_macd_hist_series": pd.Series([0.1 + (idx / 1000) for idx in range(260)], dtype=float),
+                },
+            }
+
+    class FakeFundamentalScorer:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        def score_symbol(self, symbol: str):
+            return {"f_score": 0.75, "row": {"symbol": symbol}}
+
+    class FakeSentimentScorer:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        def score_symbol(self, symbol: str, now):
+            return {"s_score": 0.7}
+
+    class FakeCompositeScorer:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        def fetch_strategy(self, _strategy_id: str):
+            return {"id": "strategy-1", "max_positions": 1}
+
+        def score_symbol(self, **kwargs):
+            return {"symbol": kwargs["symbol"], "composite": 0.8}
+
+    class FakeSignalPipeline:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        def process_symbol(self, **kwargs):
+            return {"symbol": kwargs["composite_row"]["symbol"]}
+
     class FakeThesisAnalyst:
         def __init__(self, db) -> None:
             self.db = db
@@ -173,16 +133,74 @@ def test_daily_score_signal_creates_pending_signal_summary(monkeypatch) -> None:
             assert now == datetime(2026, 5, 4, 13, 30, tzinfo=UTC)
             return {"theses_created": 1, "theses_failed": 0, "signals_skipped": 0}
 
+    def fake_score_universe(**kwargs):
+        assert kwargs["income_history"]["AAPL"][0]["fcf"] == 10.0
+        return [
+            {"symbol": "AAPL", "hard_filter_pass": True, "rank": 1},
+            {"symbol": "MSFT", "hard_filter_pass": True, "rank": 2},
+        ]
+
+    def fake_evaluate_entry(*, symbol: str, **kwargs):
+        entry_symbols.append(symbol)
+        return {
+            "symbol": symbol,
+            "strategy_id": kwargs["strategy_id"],
+            "evaluated_at": kwargs["evaluated_at"],
+            "gate_market": True,
+            "gate_trend": True,
+            "setup_type": "pullback",
+            "gate_confirmed": True,
+            "entry_price": 100.0,
+            "stop_price": 96.0,
+            "target_price": 112.0,
+            "atr": 2.0,
+            "r_multiple": 3.0,
+            "shares": 25,
+            "dollar_risk": 100.0,
+            "actionable": True,
+        }
+
+    monkeypatch.setattr(daily_score_signal, "load_universe", lambda db, strategy_id: ["AAPL", "MSFT"])
+    monkeypatch.setattr(daily_score_signal, "_load_price_df", lambda db, symbols: pd.DataFrame({
+        "AAPL": [100 + idx for idx in range(260)],
+        "MSFT": [110 + idx for idx in range(260)],
+        "SPY": [90 + idx for idx in range(260)],
+    }))
+    monkeypatch.setattr(
+        daily_score_signal,
+        "_load_latest_fundamentals",
+        lambda db, symbols: [
+            {"symbol": "AAPL", "fcf": 10.0, "ebitda": 20.0},
+            {"symbol": "MSFT", "fcf": 12.0, "ebitda": 22.0},
+        ],
+    )
+    monkeypatch.setattr(
+        daily_score_signal,
+        "_load_fundamental_history",
+        lambda db, symbols: {
+            "AAPL": [{"symbol": "AAPL", "period_end": "2025-09-28", "revenue": 100.0, "eps": 6.0, "fcf": 10.0}],
+            "MSFT": [{"symbol": "MSFT", "period_end": "2025-09-28", "revenue": 120.0, "eps": 7.0, "fcf": 12.0}],
+        },
+    )
+    monkeypatch.setattr(daily_score_signal, "_load_sectors", lambda db, symbols: {"AAPL": "Tech", "MSFT": "Tech"})
+    monkeypatch.setattr(daily_score_signal, "TechnicalScorer", FakeTechnicalScorer)
+    monkeypatch.setattr(daily_score_signal, "FundamentalScorer", FakeFundamentalScorer)
+    monkeypatch.setattr(daily_score_signal, "SentimentScorer", FakeSentimentScorer)
+    monkeypatch.setattr(daily_score_signal, "CompositeScorer", FakeCompositeScorer)
+    monkeypatch.setattr(daily_score_signal, "SignalPipeline", FakeSignalPipeline)
     monkeypatch.setattr(daily_score_signal, "ThesisAnalyst", FakeThesisAnalyst)
+    monkeypatch.setattr(daily_score_signal, "score_universe", fake_score_universe)
+    monkeypatch.setattr(daily_score_signal, "evaluate_entry", fake_evaluate_entry)
 
     summary = run_daily_score_signal(
         db=FakeDB(),
         now=datetime(2026, 5, 4, 13, 30, tzinfo=UTC),
     )
 
-    assert summary["symbols"] == 1
-    assert summary["indicators"] == 1
-    assert summary["composite_scores"] == 1
-    assert summary["signals_created"] == 1
+    assert summary["symbols"] == 2
+    assert summary["signals_created"] == 2
+    assert summary["factor_scores"] == 2
+    assert summary["entry_shortlist"] == 1
+    assert summary["entry_signals"] == 1
     assert summary["theses_created"] == 1
-    assert summary["theses_failed"] == 0
+    assert entry_symbols == ["AAPL"]

@@ -2,6 +2,8 @@
 
 Each file is one coding session. Work them in order — later tasks depend on earlier ones.
 
+The first table is the original Phase 0 build sequence. The second table captures the multi-factor strategy enhancement track introduced in [specs.md §9](../specs.md#9-strategy-page--multi-factor-enhancement).
+
 | # | Task | Status | Depends on |
 |---|------|--------|------------|
 | 00 | specs.md updated | ✅ done | — |
@@ -23,7 +25,22 @@ Each file is one coding session. Work them in order — later tasks depend on ea
 | 16 | [Frontend: types + approval queue](./16-frontend-queue.md) | ⬜ pending | 11 |
 | 17 | [Frontend: notes + briefings pages](./17-frontend-notes-briefings.md) | ⬜ pending | 13 14 16 |
 | 18 | [Frontend: navbar + smoke test](./18-frontend-navbar-e2e.md) | ⬜ pending | 15 16 17 |
-| 19 | [Strategy overview page](./19-feature-strategy-page.md) | ⬜ pending | 01 (partial: 11 15) |
+| 19 | [Original strategy page task (superseded)](./19-feature-strategy-page.md) | ⬜ pending | 01 (partial: 11 15) |
+
+## Multi-Factor Enhancement Track
+
+These tasks replace the old GoalPanel / UniverseThesis strategy plan with the current multi-factor strategy build. They should be worked in dependency order below, not from Task 19.
+
+| # | Task | Status | Depends on |
+|---|------|--------|------------|
+| 20 | [Factor layer migration](./20-enhancement-factor-layer-migration.md) | ⬜ pending | 01 |
+| 21 | [Dynamic universe screener + budget controls](./21-enhancement-screener-budgeted-universe.md) | ⬜ pending | 04 06 20 |
+| 22 | [Extended fundamentals history + SPY ingest](./22-enhancement-fundamentals-history-and-spy-ingest.md) | ⬜ pending | 04 06 20 21 |
+| 23 | [Factor scoring suite](./23-enhancement-factor-scoring-suite.md) | ⬜ pending | 20 22 |
+| 24 | [Technical enrichments + entry gates](./24-enhancement-technical-entry-gates.md) | ⬜ pending | 07 20 22 |
+| 25 | [Daily score + signal multi-factor orchestration](./25-enhancement-daily-score-signal-multifactor.md) | ⬜ pending | 12 13 23 24 |
+| 26 | [Strategy page multi-factor frontend](./26-enhancement-strategy-page-multifactor.md) | ⬜ pending | 16 18 20 25 |
+| 27 | [Verification, contracts, and runtime alignment](./27-enhancement-verification-and-runtime-alignment.md) | ⬜ pending | 20 21 22 23 24 25 26 |
 
 ## Status legend
 - ✅ done

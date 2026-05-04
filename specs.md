@@ -25,16 +25,16 @@
                    ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         fly.io                                       │
-│  ┌──────────────────────┐       ┌──────────────────────────────┐     │
-│  │  TypeScript Engine   │       │       Telegram Bot           │     │
-│  │  (Bun, legacy)       │       │       (Bun + grammy)         │     │
-│  │                      │       │                              │     │
-│  │  SMA crossover model │       │  /status /trades             │     │
-│  │  → signals table     │       │  /pause /resume              │     │
-│  └──────────┬───────────┘       └──────────────┬───────────────┘     │
-└─────────────┼──────────────────────────────────┼─────────────────────┘
-              │ writes (legacy tables)           │ reads positions/trades
-              ▼                                  ▼
+│  ┌──────────────────────┐          ┌──────────────────────────────┐  │
+│  │  TypeScript Engine   │          │       Telegram Bot           │  │
+│  │  (Bun, legacy)       │          │       (Bun + grammy)         │  │
+│  │                      │          │                              │  │
+│  │  SMA crossover model │          │  /status /trades             │  │
+│  │  → signals table     │          │  /pause /resume              │  │
+│  └──────────┬───────────┘          └──────────────┬───────────────┘  │
+└─────────────┼─────────────────────────────────────┼──────────────────┘
+              │ writes (legacy tables)              │ reads positions/trades
+              ▼                                     ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         Supabase                                     │
 │                                                                      │
@@ -136,8 +136,10 @@ Three scoring pillars, each normalized to [0, 1]:
    Claude Haiku → llm_analyses (analysis_type='briefing')
 
 3. daily-score-signal (1:30 PM UTC / 9:30 AM ET):
-   indicator_values ← computed from price_bars (RSI, MACD, ATR, BB)
+   indicator_values ← computed from price_bars (RSI, MACD, ATR, BB, SMA, ADX, OBV, vol_ratio)
    composite_scores ← F+T+S weighted sum
+   factor_scores ← sector-neutral multi-factor model (Value, Quality, Momentum, Low Vol, Growth)
+   entry_signals ← ranked-shortlist timing gates and sizing
    confluence_gate + veto_rules → signal_events (status='pending')
    Claude Haiku → llm_analyses (analysis_type='thesis') per signal
    → read approved trade_intents from prior run
@@ -180,14 +182,16 @@ Three scoring pillars, each normalized to [0, 1]:
 | `users` | Single admin user (UUID seeded in migration) |
 | `accounts` | Alpaca paper account link |
 | `strategies` | Strategy config: weights, thresholds, sizing rules, **goal parameters** |
-| `universes` | Symbol universe per strategy (10 large-caps for Phase 0) |
+| `universes` | Dynamic screened symbol universe per strategy (`active`, `screened_at`) |
 | `assets` | Symbol metadata (sector, exchange) |
 | `price_bars` | Daily OHLCV, partitioned by month |
-| `fundamentals` | Point-in-time ratios from FMP (P/E, P/B, ROE, earnings_date) |
+| `fundamentals` | Annual FMP fundamentals history, including FCF, balance-sheet, and earnings metadata |
 | `news_articles` | Finnhub headlines with VADER compound scores |
 | `social_signals` | Placeholder for Phase 1 Reddit/StockTwits data |
-| `indicator_values` | Computed technical indicators (RSI, MACD, ATR, BB, SMA) |
+| `indicator_values` | Computed technical indicators (RSI, MACD, ATR, BB, SMA, ADX, OBV, vol_ratio) |
 | `composite_scores` | F/T/S scores + weighted composite per symbol per run |
+| `factor_scores` | Sector-neutral five-factor z-scores, composite rank, and hard-filter status |
+| `entry_signals` | Ranked-shortlist timing gates, setup detection, and position sizing |
 | `signal_events` | Confluence-passed signals awaiting human approval |
 | `trade_intents` | Approved trade orders pending execution (FK → signal_events) |
 | `trade_executions` | Actual fills from Alpaca paper (FK → trade_intents) |
@@ -254,156 +258,328 @@ All new variables added to: GitHub Actions repo secrets, `engine-py/.env` (gitig
 
 ---
 
-## 9. Strategy Overview Page — Feature Spec
+## 9. Strategy Page — Multi-Factor Enhancement
 
 **Route:** `/strategy`  
 **Nav label:** Strategy  
-**Purpose:** Single-page control room showing what the strategy is trying to achieve, which stocks are in scope and why, and the full lifecycle of every trade from signal to close.
+**Purpose:** Single-page control room for the active strategy, combining factor selection, entry timing, and the existing hybrid trade pipeline.
+
+### 9.0 Context And Constraints
+
+The legacy Strategy page is built around the existing three-pillar model:
+
+- `composite_scores` = fundamental + technical + sentiment
+- `signal_events` = confluence-passed paper-trading signals
+- a static 10-symbol universe for Phase 0
+
+The multi-factor enhancement adds a second quantitative layer without replacing the legacy hybrid engine. The existing F/T/S model, `composite_scores`, and `signal_events` remain intact.
+
+Required constraints:
+
+- FMP free-tier budget is approximately 250 calls/day
+- `SPY` is required as the market benchmark for both factor and timing logic
+- the strategy surface must support future multi-strategy selection from a dropdown
+- the page must render four blocks in order: Strategy Summary, Stocks to Trade, When to Trade, Trade Pipeline
 
 ---
 
-### 9.1 Panel A — Strategy Goal
+### 9.1 Page Structure
 
-Displays the high-level intent of the active strategy and tracks progress toward it.
+The page renders four blocks in order:
 
-**Data source:** `strategies` table (goal fields below) + `accounts` table (current equity).
+1. **Strategy Summary** — active strategy selector, universe definition, hard filters, factor weights, goal metadata, and the live funnel (`screened → hard-filter pass → ranked → in portfolio`).
+2. **Stocks to Trade** — ranked factor table for the latest `factor_scores` run.
+3. **When to Trade** — top-ranked shortlist from `entry_signals`, including gate state, setup, risk levels, and sizing.
+4. **Trade Pipeline** — existing Waiting / In Market / Closed lifecycle view.
 
-**New columns added to `strategies` table** (included in Task 01 migration):
-
-| Column | Type | Default | Meaning |
-|--------|------|---------|---------|
-| `goal_growth_pct` | `numeric(6,2)` | `25.0` | Target portfolio growth in percent (e.g. 25 = +25%) |
-| `goal_months` | `int` | `12` | Months allocated to reach the target |
-| `risk_level` | `text` | `'moderate'` | One of `conservative`, `moderate`, `aggressive` |
-| `start_equity` | `numeric(18,2)` | `null` | Account equity when the strategy was activated (baseline) |
-
-**Displayed fields:**
-
-- **Target growth** — `goal_growth_pct`% in `goal_months` months (e.g. "25% in 12 months")
-- **Risk level** — badge: Conservative / Moderate / Aggressive with distinct colour
-- **Instruments** — derived from `risk_level`:
-  - Conservative → large-cap equities only, max 10 positions
-  - Moderate → large/mid-cap equities, max 15 positions
-  - Aggressive → any universe symbol, max 20 positions, smaller ATR multiplier on stops
-- **Current equity** — from `accounts.equity` (synced nightly by executor)
-- **Target equity** — `start_equity * (1 + goal_growth_pct / 100)`
-- **Progress bar** — `(current_equity - start_equity) / (target_equity - start_equity) * 100`, clamped to [0, 100]
-- **Days remaining** — computed from `strategies.created_at + goal_months months - today`
-- **P&L since start** — `current_equity - start_equity` in `$` and `%`
-
-If `start_equity` is null (strategy not yet activated): show a "Set baseline" prompt. If `accounts.equity` is null (account not yet synced): show dashes.
+Strategy selection must scope all four blocks to the chosen `strategies` row. For rows that cannot be attributed cleanly to a non-default strategy, the UI may either hide legacy fallback data or label it as legacy/global context.
 
 ---
 
-### 9.2 Panel B — Universe Analysis Thesis
+### 9.2 Universe Funnel And Hard Filters
 
-Structured view of every stock in the active strategy's universe. Explains **why** each stock is being tracked and **how it has performed** since inclusion.
+The strategy universe is no longer defined as a permanently hardcoded basket. It is driven by a nightly screener and a hard-filter stage:
 
-**Data sources:**
-- `universes` (universe membership + `added_at` date)
-- `composite_scores` (latest F/T/S scores per symbol)
-- `indicator_values` (latest computed indicators — used for the "indicator detail" tooltip)
-- `price_bars` (close price at `added_at` date and most recent close — used for trend %)
+```text
+FMP screener (~500-2000 tickers)
+  → top candidates by market cap
+      → hard filter: FCF > 0, net_debt / EBITDA < 4
+          → sector-neutral factor scoring
+              → rank all survivors
+                  → top max_positions names go to When to Trade
+```
 
-**Table columns:**
+Universe requirements:
 
-| Column | Source | Notes |
-|--------|--------|-------|
-| Symbol | `universes.symbol` | Clickable — links to trade notes for that symbol |
-| Sector | `assets.sector` | Shows "—" if asset metadata not yet loaded |
-| Added | `universes.added_at` | Date the symbol was added to the universe |
-| F-Score | `composite_scores.f_score` | Colour-coded bar: ≥0.65 green, 0.45–0.65 yellow, <0.45 red |
-| T-Score | `composite_scores.t_score` | Same colour logic |
-| S-Score | `composite_scores.s_score` | Same colour logic |
-| Composite | `composite_scores.composite` | Bold. Pillars-passed indicator (e.g. "2/3") |
-| Key indicators | `indicator_values` | Top signal per pillar: e.g. "RSI 71 · MACD ↑ · P/E 18x" |
-| Trend since added | `price_bars` | `(latest_close − close_at_added) / close_at_added × 100` — shown as `+3.2%` / `-1.1%` with colour |
-| Active signal | `signal_events` | Badge: Pending / Approved / None |
+- active US-listed equities only
+- market cap > $1B
+- average daily volume > $5M
+- listed for 5+ years
+- exchanges limited to NASDAQ and NYSE
 
-**Empty states:**
-- If `universes` is empty (pre-migration): show the 10 hardcoded symbols with all scores as "—" and a "Run first ingestion to populate" notice.
-- If scores exist but price data is missing: show scores with trend as "—".
+Operational requirements:
 
-**Interaction:** Clicking a row opens `/trades/notes/[signal_id]` for the latest signal for that symbol, or `/trades/queue` if one is pending approval.
+- screener results update `universes`
+- newly screened names are upserted with `active = true`
+- names dropped by the screener are retained historically but marked `active = false`
+- `screened_at` records the latest screener timestamp
+- the active screened universe target is configurable and defaults to 40 names to stay within the FMP free-tier budget
 
----
+Hard-filter requirements:
 
-### 9.3 Panel C — Trade Pipeline
-
-Three-column Kanban showing every trade in its current lifecycle stage.
-
-**Columns:**
-
-#### Waiting
-Signals that have been generated but not yet executed. Two sub-states shown inline:
-- **Pending approval** — `signal_events.status = 'pending'`. Needs human decision in `/trades/queue`.
-- **Approved, awaiting execution** — `signal_events.status = 'approved'` with a linked `trade_intents` row. Will be picked up on the next `daily-score-signal` GH Actions run.
-
-**Card fields:** Symbol · Direction (Long) · Entry price (stop_price as stop / target_price as TP) · Composite score badge · Time since generated
-
-#### In Market
-Open positions — trades that have been executed and not yet closed.
-
-**Primary data source:** `portfolio_positions` (Python hybrid engine).  
-**Fallback:** legacy `positions` table (TypeScript engine) — used when `portfolio_positions` is empty.
-
-**Card fields:** Symbol · Qty · Avg entry · Current price · Unrealized P&L in `$` and `%` (colour-coded) · Stop price · Target price · Days held (from `portfolio_positions.opened_at`)
-
-#### Closed
-Positions that have been fully exited.
-
-**Primary data source:** `trade_executions` where `status = 'filled'`, joined with `trade_intents` to get entry price.  
-**Fallback:** legacy `trades` table where `status = 'filled'` (TypeScript engine records).
-
-**Card fields:** Symbol · Side (Buy / Sell) · Entry price · Exit price · Qty · Realized P&L in `$` and `%` (colour-coded) · Closed date
-
-**Sorting:** Closed trades sorted by `filled_at desc` (most recent first). Max 50 shown with "Show all" link.
+- `FCF > 0`
+- `net_debt / EBITDA < 4`
+- symbols failing hard filters do not receive ranks and do not appear in `entry_signals`
+- `factor_scores.hard_filter_pass` records pass/fail status for auditability and funnel display
 
 ---
 
-### 9.4 API Routes
+### 9.3 FMP Budget And Ingest Requirements
 
-| Route | Method | Returns |
-|-------|--------|---------|
-| `/api/strategy/overview` | GET | Strategy goal + account equity + universe list with latest scores, indicators, and trend % |
-| `/api/strategy/trades` | GET | `{ waiting, in_market, closed }` — gracefully falls back to legacy tables |
+The screener and fundamentals pipeline must explicitly respect the FMP free-tier budget instead of assuming unlimited daily refreshes.
 
-Both routes use the server-side Supabase client (anon key with RLS `select` policies). No auth required for Phase 0.
+- broad screener pass: 1 call/day
+- target screened universe: default 40 active names
+- expected fundamentals inputs: profile, key metrics, ratios, income statement, cash-flow statement, balance-sheet statement
+- annual history is needed for revenue, EPS, and FCF growth calculations
+
+Budget behavior requirements:
+
+- `SCREENER_TOP_N` must be configurable in engine config
+- a separate fundamentals refresh cap must be configurable so nightly ingest can refresh only the stalest or missing subset instead of all active names every run
+- daily scoring must run from DB-resident fundamentals and price history, not by fetching live FMP history during scoring
+- if the configured FMP screener endpoint is unavailable for the account, the pipeline must record a degraded state explicitly rather than silently pretending the screener succeeded
+
+`nightly_ingest.py` requirements:
+
+- append `SPY` to the price ingest symbol list
+- ingest enough price history to support both `Momentum 12m-1m` and `Beta_60m`
+- persist annual fundamentals history, not just the latest snapshot
 
 ---
 
-### 9.5 Frontend Components
+### 9.4 Factor Model Methodology
+
+The factor model is cross-sectional and sector-relative.
+
+Methodology rules:
+
+- all factor components are winsorized at the 1st / 99th percentile within sector
+- all factor components are sector-neutral z-scored
+- z-scores are clipped to `[-3, 3]`
+- each factor score is the mean of its available component z-scores
+- the composite factor score is a weighted sum of the five factor z-scores
+
+Factor weights:
+
+| Factor | Weight |
+|--------|--------|
+| Value | 25% |
+| Quality | 25% |
+| Momentum | 25% |
+| Low Vol | 10% |
+| Growth | 15% |
+
+#### Value
+
+`Value_score` is the mean of the available sector-neutral z-scores for:
+
+- `EarningsYield = net_income / market_cap`
+- `BookYield = book_equity / market_cap`
+- `SalesYield = revenue / market_cap`
+- `FCFYield = fcf / enterprise_value`
+- `EBITDAYield = ebitda / enterprise_value`
+
+Where:
+
+- `enterprise_value = market_cap + total_debt - cash`
+- higher yield = cheaper = better
+
+#### Quality
+
+`Quality_score` is the mean of the available sector-neutral z-scores for:
+
+- `GrossProfitability = gross_profit / total_assets`
+- `ROA = net_income / total_assets`
+- `ROE`
+- `CashFlowMargin = operating_cash_flow / revenue`
+- `Accruals = -(net_income - operating_cash_flow) / total_assets`
+- `Leverage = -total_debt / total_assets`
+- `InterestCoverage = ebitda / interest_expense`
+- `NetDebtToEBITDA = -(total_debt - cash) / ebitda`
+
+Stability-style quality factors that require deeper quarterly history are explicitly out of scope for the free-tier build.
+
+#### Momentum
+
+`Momentum_score` is the sector-neutral z-score of:
+
+- `Mom_12_1 = (price[t-21] / price[t-252]) - 1`
+
+This is a 12-month return with the most recent month skipped to avoid short-term reversal noise. It uses existing `price_bars` data only.
+
+#### Low Vol
+
+`LowVol_score` is the mean of:
+
+- `-z(RealizedVol_252)`
+- `-z(Beta_60m)`
+
+Where:
+
+- `RealizedVol_252` = annualized standard deviation of daily log returns over the last 252 bars
+- `Beta_60m = cov(stock_monthly_ret, SPY_monthly_ret) / var(SPY_monthly_ret)` over the last 60 monthly observations
+- lower realized volatility and lower beta are better, so signs are flipped before z-scoring
+
+Idiosyncratic volatility requiring Fama-French factor data is out of scope.
+
+#### Growth
+
+`Growth_score` is the mean of the available sector-neutral z-scores for:
+
+- `SalesGrowth_3y = (revenue[t] / revenue[t-3y])^(1/3) - 1`
+- `EPSGrowth_3y = (eps[t] / eps[t-3y])^(1/3) - 1`
+- `FCFGrowth_3y = (fcf[t] / fcf[t-3y])^(1/3) - 1`
+
+Rules:
+
+- use annual history with at least four observations (`t`, `t-1`, `t-2`, `t-3`)
+- only compute CAGR-style growth metrics when current and past values are both positive
+- forward EPS growth and analyst revision factors are out of scope for the free-tier build
+
+---
+
+### 9.5 Entry Timing Model
+
+`entry_signals` stores timing output for the ranked shortlist only, defaulting to `rank <= strategy.max_positions`.
+
+Gate model:
+
+- **Gate 0: Market regime** — SPY above SMA200 and SMA50 above SMA200
+- **Gate 1: Trend** — close > SMA200, SMA50 > SMA200, SMA200 slope positive, ADX > 20
+- **Gate 2: Setup** — pullback, breakout, or squeeze
+- **Gate 3: Confirmation** — RSI below 70, MACD histogram rising, volume confirmation, OBV rising, relative strength vs SPY
+- **Gate 4: Risk levels** — ATR-based entry, stop, target, and `R`
+- **Gate 5: Position sizing** — shares and dollar risk from strategy sizing rules
+
+Timing implementation requirements:
+
+- `actionable = true` only when all gates pass
+- market regime is global because it depends on `SPY`
+- timing rows are generated only for the ranked shortlist, not for the entire screened universe
+- setup labels must be one of `pullback`, `breakout`, `squeeze`, or `null`
+
+Indicator requirements:
+
+- reuse existing `rsi_14`, `macd_hist`, `sma_50`, `sma_200`, `atr_14`
+- add `adx_14`
+- add `obv`
+- add `vol_ratio = volume / SMA50(volume)`
+
+---
+
+### 9.6 Backend Data Contracts
+
+The enhancement introduces or extends these tables:
+
+- `universes`: add `active`, `screened_at`
+- `fundamentals`: add `fcf`, `operating_cash_flow`, `gross_profit`, `total_assets`, `total_debt`, `book_equity`, `cash`, `ebitda`, `market_cap`, `interest_expense`
+- `indicator_values`: add `adx_14`, `obv`, `vol_ratio`
+- `factor_scores`: sector-neutral factor output and ranking
+- `entry_signals`: shortlist timing output
+
+`factor_scores` requirements:
+
+- one row per `symbol`, `strategy_id`, `scored_at`
+- raw z-score columns: `value_z`, `quality_z`, `momentum_z`, `low_vol_z`, `growth_z`
+- previous-run columns for delta display: `value_prev`, `quality_prev`, `momentum_prev`, `low_vol_prev`, `growth_prev`
+- ranking columns: `composite_z`, `rank`, `is_new`
+- funnel/audit columns: `hard_filter_pass`, `sector`
+
+`entry_signals` requirements:
+
+- one row per `symbol`, `strategy_id`, `evaluated_at`
+- gate columns: `gate_market`, `gate_trend`, `setup_type`, `gate_confirmed`
+- risk columns: `entry_price`, `stop_price`, `target_price`, `atr`, `r_multiple`
+- sizing columns: `shares`, `dollar_risk`
+- final state: `actionable`
+
+Nightly ingest expectations:
+
+- include `SPY` in `price_bars`
+- keep the active universe capped by config
+- refresh only a budgeted subset of the stalest or missing fundamentals per run
+- persist trailing annual fundamentals history so daily scoring is DB-backed, not live-FMP-backed
+
+Daily scoring expectations:
+
+- preserve existing F/T/S scoring and `signal_events`
+- compute factor ranks from DB-resident fundamentals and price history
+- evaluate entry timing only for the ranked shortlist
+- use `factor_scores` as the canonical output for the multi-factor layer
+
+---
+
+### 9.7 Frontend Requirements
 
 | Component | File | Notes |
 |-----------|------|-------|
-| `GoalPanel` | `components/strategy/GoalPanel.tsx` | Progress bar, equity numbers, risk badge |
-| `UniverseThesis` | `components/strategy/UniverseThesis.tsx` | Responsive table; score bars rendered as inline divs |
-| `TradePipeline` | `components/strategy/TradePipeline.tsx` | 3-column grid on desktop, stacked on mobile |
-| `TradeCard` | `components/strategy/TradeCard.tsx` | Shared card for all three pipeline columns |
-| `/strategy` page | `app/strategy/page.tsx` | Server Component; fetches both API routes, passes data to the three panels |
+| `StrategySummary` | `components/strategy/StrategySummary.tsx` | Strategy selector, funnel, universe rules, hard filters, factor weights, risk level, goal metadata |
+| `StocksToTrade` | `components/strategy/StocksToTrade.tsx` | Ranked factor table with symbol, sector, five factor z-scores, previous-run deltas, composite rank, and `NEW` chip |
+| `WhenToTrade` | `components/strategy/WhenToTrade.tsx` | Ranked-shortlist timing table with gate pills, setup label, entry/stop/target, `R`, shares, and dollar risk |
+| `TradePipeline` | `components/strategy/TradePipeline.tsx` | Existing pipeline view; preserve lifecycle presentation while scoping hybrid rows by selected strategy where possible |
+| `TradeCard` | `components/strategy/TradeCard.tsx` | Shared Waiting / In Market / Closed card presentation |
+| `StrategyDropdown` | `components/strategy/StrategyDropdown.tsx` | Client-side selector used by Strategy Summary |
 
-**Nav change:** Add `{ href: '/strategy', label: 'Strategy', icon: Target }` to `Navbar.tsx`. The `Target` icon is available in `lucide-react`.
+Frontend behavior requirements:
+
+- Block 1 shows the live funnel: `screened → hard-filtered → scored → in portfolio`
+- Block 2 only shows names with `hard_filter_pass = true`
+- Block 2 sorts by `composite_z` descending and displays a rank badge plus `NEW` chip when `is_new = true`
+- Block 2 shows factor deltas from the previous run using the `*_prev` columns
+- Block 3 only shows names where `rank <= N`, where `N` defaults to `strategy.max_positions`
+- Block 3 highlights `actionable = true`; other rows remain visible as waiting-for-setup candidates
+- Block 4 keeps the existing Trade Pipeline experience
 
 ---
 
-### 9.6 Schema change summary (adds to Task 01 migration)
+### 9.8 API Data Assessment
 
-```sql
--- Add goal columns to strategies table
-alter table public.strategies
-  add column if not exists goal_growth_pct  numeric(6,2)  not null default 25.0,
-  add column if not exists goal_months      int           not null default 12,
-  add column if not exists risk_level       text          not null default 'moderate'
-    check (risk_level in ('conservative','moderate','aggressive')),
-  add column if not exists start_equity     numeric(18,2);
+| Factor / Input | Source | Requirement Status |
+|----------------|--------|--------------------|
+| `EarningsYield` | FMP income statement + profile market cap | required |
+| `BookYield` | FMP balance sheet + profile market cap | required |
+| `SalesYield` | FMP income statement + profile market cap | required |
+| `FCFYield` | FMP cash-flow statement | required |
+| `EBITDAYield` | FMP income statement | required |
+| `ROE` | FMP key metrics | required |
+| `ROA` | FMP balance sheet | required |
+| `GrossProfitability` | FMP income statement | required |
+| `CashFlowMargin` | FMP cash-flow statement | required |
+| `Leverage` | FMP balance sheet | required |
+| `Momentum 12m-1m` | Alpaca `price_bars` | required |
+| `RealizedVol_252` | Alpaca `price_bars` | required |
+| `Beta_60m vs SPY` | Alpaca `price_bars` + `SPY` benchmark bars | required |
+| `Revenue growth 3y` | annual income history | required |
+| `EPS growth 3y` | annual income history | required |
+| `FCF growth 3y` | annual fundamentals / cash-flow history | required |
+| `Forward EPS growth` | analyst consensus | out of scope |
+| `EPS revisions` | analyst consensus history | out of scope |
+| `IdioVol (FF3)` | Fama-French factor data | out of scope |
+| `Earnings stability` | deep quarterly EPS history | out of scope |
+| `ADX`, `OBV`, `vol_ratio` | computed from Alpaca `price_bars` | required |
 
--- Update seed to include goal defaults
-update public.strategies
-set goal_growth_pct = 25.0,
-    goal_months     = 12,
-    risk_level      = 'moderate'
-where name = 'long_term_v0';
-```
+---
+
+### 9.9 Acceptance Criteria
+
+1. `uv run python -m artisan.jobs.nightly_ingest` populates the extended fundamentals fields (`fcf`, `total_assets`, `book_equity`, `cash`, `ebitda`, and related fields) and ingests `SPY` bars.
+2. `uv run python -m artisan.jobs.daily_score_signal` produces `factor_scores` rows with non-null factor z-scores for qualifying names.
+3. `entry_signals` contains timing rows only for the ranked shortlist, and `gate_market` is consistent across names because it derives from the same `SPY` regime check.
+4. `/strategy` renders all four blocks and the strategy selector.
+5. Stocks to Trade is sorted by `composite_z`, shows rank and delta information, and marks new ranked names with `NEW`.
+6. When to Trade shows gate pills, setup labels, risk levels, and actionable highlighting for shortlist names only.
+7. Trade Pipeline remains intact alongside the new multi-factor blocks.
 
 ---
 
@@ -417,7 +593,7 @@ where name = 'long_term_v0';
 - ~~Engine polling interval?~~ → Python engine runs on GH Actions cron (not real-time polling); TS engine keeps 60s polling
 
 ### Remaining
-- [ ] FMP free tier (250 calls/day) — enough for 10 symbols? Monitor and plan Starter upgrade path
+- [ ] FMP free tier (250 calls/day) — enough for the 40-name screened universe with budgeted refreshes? Monitor and plan Starter upgrade path
 - [ ] Earnings blackout window: ±3 days sufficient, or should it be ±1 day pre-earnings?
 - [ ] LLM budget cap per day (current plan: soft cap via `llm_analyses` aggregate query)
 - [ ] When to enable auto-approve toggle (spec says after ≥3 months, ≥30 paper trades)

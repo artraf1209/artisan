@@ -22,6 +22,9 @@ class Settings:
     account_id: str
     admin_user_id: str
     log_level: str
+    screener_top_n: int
+    fundamentals_refresh_limit: int
+    price_history_lookback_days: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,6 +35,12 @@ class Settings:
             if not value:
                 missing.append(key)
             return value or ""
+
+        def as_int(key: str, default: int) -> int:
+            value = os.getenv(key)
+            if value is None or value == "":
+                return default
+            return int(value)
 
         settings = cls(
             supabase_url=require("SUPABASE_URL"),
@@ -46,6 +55,9 @@ class Settings:
             account_id=os.getenv("ACCOUNT_ID", "00000000-0000-0000-0000-000000000002"),
             admin_user_id=os.getenv("ADMIN_USER_ID", "00000000-0000-0000-0000-000000000001"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            screener_top_n=as_int("SCREENER_TOP_N", 40),
+            fundamentals_refresh_limit=as_int("FUNDAMENTALS_REFRESH_LIMIT", 20),
+            price_history_lookback_days=as_int("PRICE_HISTORY_LOOKBACK_DAYS", 1900),
         )
         if missing:
             missing_list = ", ".join(missing)

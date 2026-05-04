@@ -9,7 +9,7 @@ from artisan.adapters import (
     FinnhubNewsAdapter,
     FmpFundamentalsAdapter,
 )
-from artisan.adapters.fmp_screener import FmpScreenerAdapter
+from artisan.adapters.fmp_screener import FmpScreenerAdapter, FmpScreenerUnavailableError
 from artisan.config import settings
 from artisan.db.client import get_client
 
@@ -30,16 +30,35 @@ def load_universe(db, strategy_id: str) -> list[str]:
     return [row["symbol"] for row in response.data]
 
 
-def refresh_universe(db, strategy_id: str, screener: FmpScreenerAdapter) -> list[str]:
+def refresh_universe(db, strategy_id: str, screener: FmpScreenerAdapter) -> dict[str, Any]:
     """
     Run FMP screener → upsert new symbols, deactivate removed ones.
-    Returns the new active symbol list.
+    Returns active symbols plus refresh status for auditing.
     """
     now_iso = datetime.now(UTC).isoformat()
-    new_symbols = screener.screen()
+    try:
+        new_symbols = screener.screen(top_n=settings.screener_top_n)
+    except FmpScreenerUnavailableError as exc:
+        existing = load_universe(db, strategy_id)
+        logger.warning("Universe screener degraded: %s", exc)
+        return {
+            "symbols": existing,
+            "status": "degraded_existing_universe",
+            "requested_top_n": settings.screener_top_n,
+            "screened_count": len(existing),
+            "error": str(exc),
+        }
+
     if not new_symbols:
+        existing = load_universe(db, strategy_id)
         logger.warning("Screener returned 0 symbols; keeping existing universe")
-        return load_universe(db, strategy_id)
+        return {
+            "symbols": existing,
+            "status": "degraded_existing_universe",
+            "requested_top_n": settings.screener_top_n,
+            "screened_count": len(existing),
+            "error": "screener_returned_zero_symbols",
+        }
 
     # Upsert new symbols as active
     rows = [
@@ -65,7 +84,48 @@ def refresh_universe(db, strategy_id: str, screener: FmpScreenerAdapter) -> list
         "Universe refreshed: %d active, %d deactivated",
         len(new_symbols), len(to_deactivate),
     )
-    return new_symbols
+    return {
+        "symbols": new_symbols,
+        "status": "refreshed",
+        "requested_top_n": settings.screener_top_n,
+        "screened_count": len(new_symbols),
+        "deactivated_count": len(to_deactivate),
+    }
+
+
+def _select_fundamental_refresh_symbols(
+    db,
+    symbols: list[str],
+    refresh_limit: int,
+) -> list[str]:
+    if not symbols or refresh_limit <= 0:
+        return []
+
+    rows = (
+        db.table("fundamentals")
+        .select("symbol, fetched_at")
+        .in_("symbol", symbols)
+        .order("fetched_at", desc=True)
+        .limit(max(len(symbols) * 6, refresh_limit))
+        .execute()
+        .data
+    )
+
+    latest_by_symbol: dict[str, str] = {}
+    for row in rows:
+        symbol = row.get("symbol")
+        fetched_at = row.get("fetched_at")
+        if symbol and fetched_at and symbol not in latest_by_symbol:
+            latest_by_symbol[symbol] = fetched_at
+
+    missing = [symbol for symbol in symbols if symbol not in latest_by_symbol]
+    stale = sorted(
+        latest_by_symbol.items(),
+        key=lambda item: item[1],
+    )
+    stale_symbols = [symbol for symbol, _ in stale if symbol not in missing]
+    ordered = missing + stale_symbols
+    return ordered[:refresh_limit]
 
 
 def write_audit_log(
@@ -111,15 +171,32 @@ def run_nightly_ingest(
 
     # ── Universe refresh via FMP screener ─────────────────────────────────
     if refresh_universe_from_screener:
-        symbols = refresh_universe(db, settings.strategy_id, screener)
+        universe_refresh = refresh_universe(db, settings.strategy_id, screener)
+        symbols = universe_refresh["symbols"]
     else:
-        symbols = load_universe(db, settings.strategy_id)
+        existing_symbols = load_universe(db, settings.strategy_id)
+        universe_refresh = {
+            "symbols": existing_symbols,
+            "status": "existing_universe_only",
+            "requested_top_n": settings.screener_top_n,
+            "screened_count": len(existing_symbols),
+        }
+        symbols = existing_symbols
 
     if not symbols:
         raise RuntimeError("Universe is empty for configured strategy")
 
+    refresh_symbols = _select_fundamental_refresh_symbols(
+        db,
+        symbols,
+        settings.fundamentals_refresh_limit,
+    )
+
     summary: dict[str, Any] = {
         "symbols": len(symbols),
+        "screened_symbols": universe_refresh.get("screened_count", len(symbols)),
+        "universe_refresh_status": universe_refresh.get("status"),
+        "fundamental_targets": len(refresh_symbols),
         "price_rows": 0,
         "fundamental_rows": 0,
         "news_rows": 0,
@@ -127,7 +204,7 @@ def run_nightly_ingest(
     }
 
     # ── Price bars (include SPY as benchmark) ─────────────────────────────
-    price_start = now.date() - timedelta(days=400)
+    price_start = now.date() - timedelta(days=settings.price_history_lookback_days)
     price_end = now.date()
     all_price_symbols = list(dict.fromkeys(symbols + ["SPY"]))  # SPY for market regime + beta
 
@@ -148,7 +225,7 @@ def run_nightly_ingest(
 
     # ── Fundamentals (extended: cash-flow + balance-sheet) ────────────────
     fundamental_rows = 0
-    for symbol in symbols:
+    for symbol in refresh_symbols:
         try:
             fundamentals_adapter.sync_symbol(symbol)
             fundamental_rows += 1
@@ -164,6 +241,7 @@ def run_nightly_ingest(
         entity="fundamentals",
         payload={
             "row_count": fundamental_rows,
+            "refresh_targets": refresh_symbols,
             "failures": [f for f in summary["failures"] if f["stage"] == "fundamentals"],
         },
     )
@@ -193,7 +271,7 @@ def run_nightly_ingest(
         },
     )
 
-    if summary["fundamental_rows"] == 0:
+    if refresh_symbols and summary["fundamental_rows"] == 0:
         raise RuntimeError("Nightly ingest failed: no fundamentals were ingested")
 
     logger.info("Nightly ingest summary: %s", summary)

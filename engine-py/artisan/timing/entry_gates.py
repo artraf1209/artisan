@@ -31,12 +31,22 @@ def _trend_ok(snapshot: dict[str, Any]) -> bool:
     sma50 = snapshot.get("sma_50")
     sma200 = snapshot.get("sma_200")
     adx = snapshot.get("adx_14")
+    close_series: pd.Series | None = snapshot.get("_close_series")
 
     if close is None or sma50 is None or sma200 is None:
         return False
     if close < sma200 or sma50 < sma200:
         return False
     if adx is not None and adx < ADX_TREND_THRESHOLD:
+        return False
+    if close_series is None or len(close_series) < 220:
+        return False
+
+    sma200_series = close_series.rolling(200).mean().dropna()
+    if len(sma200_series) < 20:
+        return False
+    slope = sma200_series.iloc[-1] - sma200_series.iloc[-20]
+    if slope <= 0:
         return False
     return True
 
@@ -82,8 +92,6 @@ def _detect_setup(snapshot: dict[str, Any]) -> str | None:
     bb_upper = snapshot.get("bb_upper")
     bb_lower = snapshot.get("bb_lower")
     if bb_mid and bb_upper and bb_lower and len(close_series) >= 120:
-        bw = pd.Series([(snapshot.get("bb_upper", 0) - snapshot.get("bb_lower", 0))
-                        / snapshot.get("bb_mid", 1)])
         # Use current bandwidth vs historical — simplified check
         current_bw = (bb_upper - bb_lower) / bb_mid if bb_mid else 1.0
         above_mid = close > bb_mid
@@ -94,14 +102,14 @@ def _detect_setup(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def _confirmed(snapshot: dict[str, Any], spy_close: float | None) -> bool:
+def _confirmed(snapshot: dict[str, Any], spy_df: pd.DataFrame | None) -> bool:
     """Gate 3: multi-signal confirmation."""
     rsi = snapshot.get("rsi_14")
     macd_hist = snapshot.get("macd_hist")
     obv_series: pd.Series | None = snapshot.get("_obv_series")
     macd_hist_series: pd.Series | None = snapshot.get("_macd_hist_series")
+    close_series: pd.Series | None = snapshot.get("_close_series")
     vol_ratio = snapshot.get("vol_ratio")
-    close = snapshot.get("close")
 
     # RSI not overbought
     if rsi is None or rsi >= 70:
@@ -122,6 +130,15 @@ def _confirmed(snapshot: dict[str, Any], spy_close: float | None) -> bool:
     if obv_series is not None and len(obv_series) >= 21:
         if obv_series.iloc[-1] <= obv_series.iloc[-21]:
             return False
+
+    # Relative strength vs SPY over the last quarter.
+    if close_series is None or len(close_series) < 64 or spy_df is None or len(spy_df) < 64:
+        return False
+    spy_close = spy_df["close"].astype(float)
+    stock_return = (close_series.iloc[-1] / close_series.iloc[-64]) - 1
+    spy_return = (spy_close.iloc[-1] / spy_close.iloc[-64]) - 1
+    if stock_return <= spy_return:
+        return False
 
     return True
 
@@ -150,7 +167,7 @@ def evaluate_entry(
     gate_market = _market_regime_ok(spy_df) if spy_df is not None else None
     gate_trend = _trend_ok(snapshot)
     setup_type = _detect_setup(snapshot) if gate_trend else None
-    gate_confirmed = _confirmed(snapshot, None) if setup_type else False
+    gate_confirmed = _confirmed(snapshot, spy_df) if setup_type else False
 
     entry = snapshot.get("close") or 0.0
     atr = snapshot.get("atr_14") or 0.0

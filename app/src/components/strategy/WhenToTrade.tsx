@@ -84,7 +84,7 @@ export default function WhenToTrade({ rows }: { rows: EntryRow[] }) {
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">When To Trade</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Entry-gate readout from the latest timing pass.
+            Entry-gate readout for the current ranked shortlist.
           </p>
         </div>
         <div className="text-right text-sm">
@@ -98,7 +98,7 @@ export default function WhenToTrade({ rows }: { rows: EntryRow[] }) {
       <div className="mb-4 rounded-2xl border border-border/70 bg-background/35 px-4 py-3">
         <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Market Regime</p>
         <p className={cn('mt-1 text-sm font-medium', marketGate === false ? 'text-loss' : 'text-profit')}>
-          {marketGate === false ? 'Risk-off: market gate is closed.' : 'Risk-on: market gate is open.'}
+          {marketGate === false ? 'Risk-off: the global SPY gate is closed.' : 'Risk-on: the global SPY gate is open.'}
         </p>
       </div>
 
@@ -146,6 +146,9 @@ export default function WhenToTrade({ rows }: { rows: EntryRow[] }) {
               <div className="mt-4 flex flex-wrap gap-2">
                 {gateChip('Market', row.gate_market)}
                 {gateChip('Trend', row.gate_trend)}
+                <span className="rounded-full border border-border/70 bg-accent/50 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  Setup {setupLabel(row.setup_type)}
+                </span>
                 {gateChip('Confirm', row.gate_confirmed)}
               </div>
 
