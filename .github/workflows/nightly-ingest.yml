@@ -8,11 +8,6 @@ on:
     # - Sunday run feeds Monday briefing/scoring
     # - Mon-Thu runs feed next day's briefing/scoring
     - cron: '0 21 * * 0-4'
-  push:
-    branches:
-      - claude/restart-nightly-insight-8Mz6L
-    paths:
-      - .github/workflows/nightly-ingest.yml
   workflow_dispatch:
     inputs:
       force_pre_reset:
