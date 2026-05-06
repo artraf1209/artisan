@@ -28,17 +28,29 @@ def _load_price_df(
     from datetime import timedelta
 
     start = (datetime.now(UTC).date() - timedelta(days=days)).isoformat()
-    fetch_limit = max((len(symbols) + 1) * max(days + 50, 600), 1_000)
-    rows = (
-        db.table("price_bars")
-        .select("symbol, bar_time, close")
-        .in_("symbol", symbols + ["SPY"])
-        .gte("bar_time", start)
-        .order("bar_time", desc=False)
-        .limit(fetch_limit)
-        .execute()
-        .data
-    )
+    rows: list[dict[str, Any]] = []
+    page_size = 1_000
+    offset = 0
+
+    while True:
+        page = (
+            db.table("price_bars")
+            .select("symbol, bar_time, close")
+            .in_("symbol", symbols + ["SPY"])
+            .gte("bar_time", start)
+            .order("bar_time", desc=False)
+            .order("symbol", desc=False)
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+        )
+        if not page:
+            break
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
     if not rows:
         return pd.DataFrame()
 
@@ -56,6 +68,7 @@ def _load_latest_fundamentals(db, symbols: list[str]) -> list[dict[str, Any]]:
         .select("*")
         .in_("symbol", symbols)
         .order("fetched_at", desc=True)
+        .order("period_end", desc=True)
         .limit(max(len(symbols) * 6, 24))
         .execute()
         .data

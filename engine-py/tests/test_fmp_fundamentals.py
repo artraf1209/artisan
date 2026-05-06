@@ -34,7 +34,7 @@ class FakeDB:
 
 def test_build_fundamental_row_maps_complete_response() -> None:
     payloads = {
-        "/profile": [{"companyName": "Apple", "exchangeShortName": "NASDAQ", "sector": "Tech", "industry": "Hardware", "mktCap": 1000}],
+        "/profile": [{"companyName": "Apple", "exchangeShortName": "NASDAQ", "sector": "Tech", "industry": "Hardware", "marketCap": 1000}],
         "/key-metrics": [{"date": "2025-09-28", "returnOnEquity": 1.45}],
         "/ratios": [{"priceToEarningsRatio": 28.2, "priceToBookRatio": 42.0, "debtToEquityRatio": 1.2}],
         "/income-statement": [
@@ -69,9 +69,36 @@ def test_build_fundamental_row_maps_complete_response() -> None:
     assert row["pe_ratio"] == 28.2
     assert row["fcf"] == 22.0
     assert row["book_equity"] == 120.0
+    assert row["market_cap"] == 1000.0
     assert row["earnings_date"] == "2026-05-08"
     assert asset_row["exchange"] == "NASDAQ"
     assert asset_row["sector"] == "Tech"
+
+
+def test_build_fundamental_row_uses_mktcap_as_fallback() -> None:
+    payloads = {
+        "/profile": [{"companyName": "Apple", "mktCap": 750}],
+        "/key-metrics": [{"date": "2025-09-28"}],
+        "/ratios": [{}],
+        "/income-statement": [{"date": "2025-09-28", "revenue": 100.0}],
+        "/cash-flow-statement": [{"date": "2025-09-28"}],
+        "/balance-sheet-statement": [{"date": "2025-09-28"}],
+        "/earnings-calendar": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path.removeprefix("/stable")
+        return httpx.Response(200, json=payloads[path])
+
+    adapter = FmpFundamentalsAdapter(
+        db=FakeDB(),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://financialmodelingprep.com/stable",
+    )
+
+    row, _asset_row = adapter.build_fundamental_row("AAPL")
+
+    assert row["market_cap"] == 750.0
 
 
 def test_sync_symbol_persists_nullable_fields_when_responses_are_partial() -> None:

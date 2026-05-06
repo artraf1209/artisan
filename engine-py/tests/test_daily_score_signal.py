@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pandas as pd
 
 import artisan.jobs.daily_score_signal as daily_score_signal
-from artisan.jobs.daily_score_signal import run_daily_score_signal
+from artisan.jobs.daily_score_signal import _load_latest_fundamentals, _load_price_df, run_daily_score_signal
 
 
 class FakeInsertQuery:
@@ -45,6 +45,131 @@ class FakeDB:
         if table_name in {"entry_signals", "audit_log"}:
             return FakeInsertQuery(table_name, self.saves)
         raise AssertionError(f"Unexpected table: {table_name}")
+
+
+class FakePriceQuery:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.range_start = 0
+        self.range_end = len(rows) - 1
+
+    def select(self, _fields: str):
+        return self
+
+    def in_(self, _column: str, _values):
+        return self
+
+    def gte(self, _column: str, _value):
+        return self
+
+    def order(self, _column: str, desc: bool = False):
+        assert desc is False
+        return self
+
+    def range(self, start: int, end: int):
+        self.range_start = start
+        self.range_end = end
+        return self
+
+    def execute(self):
+        data = self.rows[self.range_start:self.range_end + 1]
+        return type("Response", (), {"data": data})()
+
+
+class FakePriceDB:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+
+    def table(self, table_name: str):
+        if table_name != "price_bars":
+            raise AssertionError(f"Unexpected table: {table_name}")
+        return FakePriceQuery(self.rows)
+
+
+class FakeFundamentalsQuery:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+
+    def select(self, _fields: str):
+        return self
+
+    def in_(self, _column: str, _values):
+        return self
+
+    def order(self, _column: str, desc: bool = False):
+        if _column == "fetched_at":
+            self.rows.sort(key=lambda row: row["fetched_at"], reverse=desc)
+        elif _column == "period_end":
+            self.rows.sort(key=lambda row: row["period_end"], reverse=desc)
+        return self
+
+    def limit(self, limit: int):
+        self.rows = self.rows[:limit]
+        return self
+
+    def execute(self):
+        return type("Response", (), {"data": self.rows})()
+
+
+class FakeFundamentalsDB:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+
+    def table(self, table_name: str):
+        if table_name != "fundamentals":
+            raise AssertionError(f"Unexpected table: {table_name}")
+        return FakeFundamentalsQuery(list(self.rows))
+
+
+def test_load_price_df_paginates_beyond_supabase_row_cap() -> None:
+    index = pd.date_range("2021-01-01", periods=1253, freq="D")
+    rows = [
+        {
+            "symbol": symbol,
+            "bar_time": ts.isoformat(),
+            "close": 100 + idx,
+        }
+        for idx, ts in enumerate(index)
+        for symbol in ("AAPL", "SPY")
+    ]
+
+    wide = _load_price_df(FakePriceDB(rows), ["AAPL"], days=10)
+
+    assert not wide.empty
+    assert {"AAPL", "SPY"}.issubset(set(wide.columns))
+    assert len(wide) == len(index)
+
+
+def test_load_latest_fundamentals_prefers_most_recent_period_for_same_fetch() -> None:
+    rows = [
+        {
+            "symbol": "AAPL",
+            "period_end": "2024-09-28",
+            "period_type": "annual",
+            "market_cap": None,
+            "fetched_at": "2026-05-06T15:35:48.777249+00:00",
+        },
+        {
+            "symbol": "AAPL",
+            "period_end": "2025-09-28",
+            "period_type": "annual",
+            "market_cap": 1000.0,
+            "fetched_at": "2026-05-06T15:35:48.777249+00:00",
+        },
+        {
+            "symbol": "MSFT",
+            "period_end": "2025-06-30",
+            "period_type": "annual",
+            "market_cap": 2000.0,
+            "fetched_at": "2026-05-06T15:35:48.777249+00:00",
+        },
+    ]
+
+    latest = _load_latest_fundamentals(FakeFundamentalsDB(rows), ["AAPL", "MSFT"])
+    by_symbol = {row["symbol"]: row for row in latest}
+
+    assert by_symbol["AAPL"]["period_end"] == "2025-09-28"
+    assert by_symbol["AAPL"]["market_cap"] == 1000.0
 
 
 def test_daily_score_signal_only_generates_entry_signals_for_ranked_shortlist(monkeypatch) -> None:

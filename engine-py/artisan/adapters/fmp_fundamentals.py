@@ -110,6 +110,10 @@ class FmpFundamentalsAdapter:
         except (TypeError, ValueError):
             return None
 
+    @classmethod
+    def _profile_market_cap(cls, profile: dict[str, Any]) -> float | None:
+        return cls._safe_float(profile.get("marketCap") or profile.get("mktCap"))
+
     def build_asset_row(self, symbol: str, profile: dict[str, Any]) -> dict:
         return {
             "symbol": symbol,
@@ -197,7 +201,7 @@ class FmpFundamentalsAdapter:
                     "total_debt": balance.get("totalDebt"),
                     "book_equity": balance.get("totalStockholdersEquity"),
                     "cash": balance.get("cashAndCashEquivalents"),
-                    "market_cap": self._safe_float(profile.get("mktCap")) if idx == 0 else None,
+                    "market_cap": self._profile_market_cap(profile) if idx == 0 else None,
                     "source": "fmp",
                     "fetched_at": fetched_at,
                 }
