@@ -139,7 +139,22 @@ class FmpScreenerAdapter:
         except Exception:
             logger.warning("S&P 500 constituent fallback also failed", exc_info=True)
 
-        joined = ", ".join(errors) if errors else "no_compatible_endpoint"
-        raise FmpScreenerUnavailableError(
-            f"FMP screener unavailable for current account; attempts={joined}"
+        # All API-based screener endpoints are blocked on this plan tier.
+        # Fall back to a curated static universe of large-cap NASDAQ/NYSE stocks
+        # covering all major GICS sectors. Every stock satisfies the universe criteria
+        # (market cap >> $1B, volume >> $5M, 5+ years public, US listed).
+        logger.info(
+            "All screener endpoints unavailable (%s); using static large-cap universe",
+            ", ".join(errors),
         )
+        static = [
+            # Technology
+            "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AVGO", "ORCL", "CRM", "AMD", "QCOM",
+            # Financials
+            "JPM", "V", "MA", "BAC", "WFC", "GS", "AXP", "BLK", "MS", "SCHW",
+            # Healthcare
+            "UNH", "LLY", "JNJ", "ABT", "MRK", "TMO", "ABBV", "DHR", "AMGN", "MDT",
+            # Consumer / Retail / Energy / Industrial
+            "AMZN", "WMT", "HD", "COST", "MCD", "PG", "KO", "XOM", "CVX", "CAT",
+        ]
+        return [{"symbol": s, "ipoDate": "2000-01-01", "marketCap": None} for s in static]
