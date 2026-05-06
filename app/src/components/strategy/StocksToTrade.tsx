@@ -85,7 +85,7 @@ export default function StocksToTrade({ rows }: { rows: CandidateRow[] }) {
   const filteredOut = rows.length - passing.length
 
   return (
-    <div className="surface-panel p-6 xl:col-span-7">
+    <div className="surface-panel p-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Stocks To Trade</p>

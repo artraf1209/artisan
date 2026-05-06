@@ -376,7 +376,7 @@ export default async function StrategyPage({
     >
       <StrategySummary strategies={strategies} selected={selected} funnel={funnel} />
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+      <div className="space-y-5">
         <StocksToTrade rows={stockRows} />
         <WhenToTrade rows={timingRows} />
       </div>

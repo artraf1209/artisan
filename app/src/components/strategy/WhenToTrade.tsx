@@ -79,7 +79,7 @@ export default function WhenToTrade({ rows }: { rows: EntryRow[] }) {
   const setupCount = sorted.filter((row) => row.setup_type != null).length
 
   return (
-    <div className="surface-panel p-6 xl:col-span-5">
+    <div className="surface-panel p-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">When To Trade</p>
