@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -25,7 +24,7 @@ class FmpScreenerAdapter:
     def __init__(
         self,
         http_client: httpx.Client | None = None,
-        base_url: str = "https://financialmodelingprep.com",
+        base_url: str = "https://financialmodelingprep.com/stable",
     ) -> None:
         self.http_client = http_client or httpx.Client(timeout=30.0)
         self.base_url = base_url.rstrip("/")
@@ -51,18 +50,16 @@ class FmpScreenerAdapter:
         top_n = top_n or settings.screener_top_n
         rows = self._screen_rows()
 
-        # Keep only stocks with 5+ years of trading history
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=5 * 365)).date()
         qualified = []
         for r in rows:
-            ipo = r.get("ipoDate")
-            if not ipo:
+            symbol = r.get("symbol")
+            if not symbol:
                 continue
-            try:
-                if datetime.strptime(ipo, "%Y-%m-%d").date() <= cutoff:
-                    qualified.append(r)
-            except ValueError:
+            if r.get("isEtf") or r.get("isFund"):
                 continue
+            if r.get("isActivelyTrading") is False:
+                continue
+            qualified.append(r)
 
         # Sort by market cap descending, take top N
         qualified.sort(key=lambda r: r.get("marketCap") or 0, reverse=True)
@@ -71,90 +68,22 @@ class FmpScreenerAdapter:
         return symbols
 
     def _screen_rows(self) -> list[dict]:
-        attempts = [
-            (
-                "stable",
-                "stable/stock-screener",
-                {
-                    "marketCapMoreThan": 1_000_000_000,
-                    "volumeMoreThan": 5_000_000,
-                    "exchange": "nasdaq,nyse",
-                    "country": "US",
-                    "isActivelyTrading": True,
-                },
-            ),
-            (
-                "v3",
-                "api/v3/stock-screener",
-                {
-                    "marketCapMoreThan": 1_000_000_000,
-                    "volumeMoreThan": 5_000_000,
-                    "exchange": "NASDAQ,NYSE",
-                    "country": "US",
-                    "isActivelyTrading": True,
-                },
-            ),
-        ]
-        errors: list[str] = []
-
-        for label, path, params in attempts:
-            try:
-                rows = self._get(path, **params)
-                logger.info("Universe screener using FMP %s endpoint", label)
-                return rows
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                errors.append(f"{label}:{status}")
-                if status in (403, 404, 429):
-                    logger.warning("FMP %s screener unavailable (%s)", label, status)
-                    continue
-                raise
-
-        # Screener endpoints blocked on free tier — fall back to S&P 500 constituents.
-        # All S&P 500 members are NASDAQ/NYSE, market cap >> $1B, volume >> $5M, and
-        # have been public for many years — they satisfy our universe criteria without
-        # needing per-symbol API calls.
         try:
-            sp500 = self._get("api/v3/sp500_constituent")
-            if sp500:
-                logger.info(
-                    "Screener endpoints unavailable (%s); falling back to S&P 500 constituents (%d stocks)",
-                    ", ".join(errors),
-                    len(sp500),
-                )
-                # Normalise to the shape screen() expects: symbol + ipoDate proxy
-                rows = []
-                for r in sp500:
-                    sym = r.get("symbol")
-                    if not sym:
-                        continue
-                    # Use a fixed old date: S&P 500 membership implies the company is
-                    # established, regardless of when it joined the index.
-                    rows.append({
-                        "symbol": sym,
-                        "ipoDate": "2000-01-01",
-                        "marketCap": None,  # unknown — rely on index membership as proxy
-                    })
-                return rows
-        except Exception:
-            logger.warning("S&P 500 constituent fallback also failed", exc_info=True)
-
-        # All API-based screener endpoints are blocked on this plan tier.
-        # Fall back to a curated static universe of large-cap NASDAQ/NYSE stocks
-        # covering all major GICS sectors. Every stock satisfies the universe criteria
-        # (market cap >> $1B, volume >> $5M, 5+ years public, US listed).
-        logger.info(
-            "All screener endpoints unavailable (%s); using static large-cap universe",
-            ", ".join(errors),
-        )
-        static = [
-            # Technology
-            "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AVGO", "ORCL", "CRM", "AMD", "QCOM",
-            # Financials
-            "JPM", "V", "MA", "BAC", "WFC", "GS", "AXP", "BLK", "MS", "SCHW",
-            # Healthcare
-            "UNH", "LLY", "JNJ", "ABT", "MRK", "TMO", "ABBV", "DHR", "AMGN", "MDT",
-            # Consumer / Retail / Energy / Industrial
-            "AMZN", "WMT", "HD", "COST", "MCD", "PG", "KO", "XOM", "CVX", "CAT",
-        ]
-        return [{"symbol": s, "ipoDate": "2000-01-01", "marketCap": None} for s in static]
+            rows = self._get(
+                "company-screener",
+                marketCapMoreThan=1_000_000_000,
+                volumeMoreThan=5_000_000,
+                exchange="NASDAQ,NYSE",
+                country="US",
+                isActivelyTrading=True,
+            )
+            logger.info("Universe screener using FMP stable company-screener endpoint")
+            return rows
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (403, 404, 429):
+                logger.warning("FMP stable company screener unavailable (%s)", status)
+                raise FmpScreenerUnavailableError(
+                    f"FMP screener unavailable for current account; attempts=stable_company:{status}"
+                ) from exc
+            raise
