@@ -22,8 +22,8 @@ class Settings:
     account_id: str
     admin_user_id: str
     log_level: str
-    screener_top_n: int
-    fundamentals_refresh_limit: int
+    screener_top_n: int | None
+    fundamentals_refresh_limit: int | None
     price_history_lookback_days: int
     fmp_quota_reset_hour_utc: int
     fmp_quota_reset_minute_utc: int
@@ -46,6 +46,12 @@ class Settings:
                 return default
             return int(value)
 
+        def as_optional_int(key: str) -> int | None:
+            value = os.getenv(key)
+            if value is None or value == "":
+                return None
+            return int(value)
+
         def as_bool(key: str, default: bool = False) -> bool:
             value = os.getenv(key, "").lower()
             if value == "":
@@ -65,8 +71,8 @@ class Settings:
             account_id=os.getenv("ACCOUNT_ID", "00000000-0000-0000-0000-000000000002"),
             admin_user_id=os.getenv("ADMIN_USER_ID", "00000000-0000-0000-0000-000000000001"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
-            screener_top_n=as_int("SCREENER_TOP_N", 40),
-            fundamentals_refresh_limit=as_int("FUNDAMENTALS_REFRESH_LIMIT", 20),
+            screener_top_n=as_optional_int("SCREENER_TOP_N"),
+            fundamentals_refresh_limit=as_optional_int("FUNDAMENTALS_REFRESH_LIMIT"),
             price_history_lookback_days=as_int("PRICE_HISTORY_LOOKBACK_DAYS", 1900),
             fmp_quota_reset_hour_utc=as_int("FMP_QUOTA_RESET_HOUR_UTC", 20),  # 8pm UTC = 3pm EST
             fmp_quota_reset_minute_utc=as_int("FMP_QUOTA_RESET_MINUTE_UTC", 0),

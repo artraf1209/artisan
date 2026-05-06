@@ -1,4 +1,4 @@
-# Task 21 — Dynamic Universe Screener + Budget Controls
+# Task 21 — Dynamic Universe Screener + Paid-Tier Universe Policy
 
 **Status:** ⬜ pending  
 **Depends on:** 04 06 20  
@@ -8,7 +8,7 @@
 
 ## Goal
 
-Replace the static universe assumption with a dynamic, budget-aware screener pipeline that updates `universes` nightly and records degraded states explicitly when the screener is unavailable.
+Replace the static universe assumption with a dynamic paid-tier screener pipeline that updates `universes` nightly and records degraded states explicitly when the screener is unavailable.
 
 Full feature spec is in [specs.md §9.2–9.3](../specs.md#92-universe-funnel-and-hard-filters).
 
@@ -40,17 +40,20 @@ Implement an FMP-backed screener that:
 - filters out names listed for less than 5 years
 - returns the top candidates by market cap
 
-The active screened universe target must be configurable and default to 40 names.
+Policy requirements:
+
+- upstream request-level filters must be used wherever the paid FMP screener supports them
+- the screened universe defaults to the full qualified screener result set
+- `SCREENER_TOP_N`, if retained, is only an operator override and not the default behavior
 
 ---
 
-## Budget and degradation requirements
+## Degradation requirements
 
 Add engine config for:
 
 - `SCREENER_TOP_N`
-- `FUNDAMENTALS_REFRESH_LIMIT`
-- any other lookback/budget knobs needed for safe nightly operation
+- any other optional override knobs needed for operational safety
 
 Behavior requirements:
 
@@ -77,5 +80,6 @@ The helper must be reusable by the factor model and any audit or funnel reportin
 - [ ] `fmp_screener.py` returns a screened candidate list matching the universe rules
 - [ ] `hard_filters.py` exposes the required hard-filter logic
 - [ ] nightly ingest updates `universes.active` and `screened_at`
-- [ ] screener caps are configurable from engine settings
+- [ ] the screened universe defaults to the full qualified screener result set
+- [ ] any retained screener cap is documented as an optional operator override only
 - [ ] degraded screener behavior is visible in logs and summaries instead of being silent

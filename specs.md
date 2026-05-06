@@ -281,10 +281,10 @@ The multi-factor enhancement adds a second quantitative layer without replacing 
 
 Required constraints:
 
-- FMP free-tier budget is approximately 250 calls/day
 - `SPY` is required as the market benchmark for both factor and timing logic
 - the strategy surface must support future multi-strategy selection from a dropdown
 - the page must render four blocks in order: Strategy Summary, Stocks to Trade, When to Trade, Trade Pipeline
+- request-level filtering should be used where the paid FMP screener supports it
 
 ---
 
@@ -321,6 +321,14 @@ Universe requirements:
 - average daily volume > $5M
 - listed for 5+ years
 - exchanges limited to NASDAQ and NYSE
+- request-level filters should be applied upstream when the FMP endpoint supports them:
+  - `marketCapMoreThan`
+  - `volumeMoreThan`
+  - `exchange`
+  - `country`
+  - `isActivelyTrading`
+- unsupported universe checks move to code-side or DB-side filtering
+- ETF/fund exclusion may be enforced in code when the screener response exposes `isEtf` / `isFund`
 
 Operational requirements:
 
@@ -328,7 +336,8 @@ Operational requirements:
 - newly screened names are upserted with `active = true`
 - names dropped by the screener are retained historically but marked `active = false`
 - `screened_at` records the latest screener timestamp
-- the active screened universe target is configurable and defaults to 40 names to stay within the FMP free-tier budget
+- the screened universe defaults to the full qualified screener result set
+- any universe cap is an optional operator override, not the default behavior
 
 Hard-filter requirements:
 
@@ -339,19 +348,20 @@ Hard-filter requirements:
 
 ---
 
-### 9.3 FMP Budget And Ingest Requirements
+### 9.3 FMP Ingest Requirements
 
-The screener and fundamentals pipeline must explicitly respect the FMP free-tier budget instead of assuming unlimited daily refreshes.
+The screener and fundamentals pipeline must assume paid-tier access by default rather than preserving free-tier throttling as the normal operating mode.
 
-- broad screener pass: 1 call/day
-- target screened universe: default 40 active names
+- broad screener pass: 1 call/day using upstream request-level filters where supported
+- screened universe: full qualified screener result set by default
 - expected fundamentals inputs: profile, key metrics, ratios, income statement, cash-flow statement, balance-sheet statement
 - annual history is needed for revenue, EPS, and FCF growth calculations
 
-Budget behavior requirements:
+Ingest behavior requirements:
 
-- `SCREENER_TOP_N` must be configurable in engine config
-- a separate fundamentals refresh cap must be configurable so nightly ingest can refresh only the stalest or missing subset instead of all active names every run
+- `SCREENER_TOP_N` may exist only as an optional operator override, not as the default behavior
+- `FUNDAMENTALS_REFRESH_LIMIT` may exist only as an optional emergency override, not as the default behavior
+- nightly ingest should refresh fundamentals for the full screened universe by default
 - daily scoring must run from DB-resident fundamentals and price history, not by fetching live FMP history during scoring
 - if the configured FMP screener endpoint is unavailable for the account, the pipeline must record a degraded state explicitly rather than silently pretending the screener succeeded
 
@@ -360,6 +370,7 @@ Budget behavior requirements:
 - append `SPY` to the price ingest symbol list
 - ingest enough price history to support both `Momentum 12m-1m` and `Beta_60m`
 - persist annual fundamentals history, not just the latest snapshot
+- use upstream screener filters for market cap, volume, exchange, country, and active status whenever the paid endpoint supports them
 
 ---
 

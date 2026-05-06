@@ -34,7 +34,7 @@ These tasks replace the old GoalPanel / UniverseThesis strategy plan with the cu
 | # | Task | Status | Depends on |
 |---|------|--------|------------|
 | 20 | [Factor layer migration](./20-enhancement-factor-layer-migration.md) | ⬜ pending | 01 |
-| 21 | [Dynamic universe screener + budget controls](./21-enhancement-screener-budgeted-universe.md) | ⬜ pending | 04 06 20 |
+| 21 | [Dynamic universe screener + paid-tier universe policy](./21-enhancement-screener-budgeted-universe.md) | ⬜ pending | 04 06 20 |
 | 22 | [Extended fundamentals history + SPY ingest](./22-enhancement-fundamentals-history-and-spy-ingest.md) | ⬜ pending | 04 06 20 21 |
 | 23 | [Factor scoring suite](./23-enhancement-factor-scoring-suite.md) | ⬜ pending | 20 22 |
 | 24 | [Technical enrichments + entry gates](./24-enhancement-technical-entry-gates.md) | ⬜ pending | 07 20 22 |

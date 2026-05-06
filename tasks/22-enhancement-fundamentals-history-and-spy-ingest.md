@@ -13,7 +13,7 @@ Upgrade nightly ingest so the database contains all factor inputs needed by the 
 - extended FMP fundamentals fields
 - trailing annual fundamentals history
 - `SPY` benchmark bars
-- budgeted fundamentals refreshes instead of full-universe refetches every run
+- full-universe fundamentals refreshes by default on paid-tier access
 
 Full feature spec is in [specs.md §9.3–9.4](../specs.md#93-fmp-budget-and-ingest-requirements).
 
@@ -64,10 +64,10 @@ Update `nightly_ingest.py` to:
 
 - include `SPY` in the price bar fetch
 - ingest enough lookback history to support both `Momentum 12m-1m` and `Beta_60m`
-- refresh only the missing or stalest fundamentals subset each run
+- refresh the full screened universe each run by default
 - score from the full active universe later, using DB-resident data
 
-The refresh subset should be budget-aware and configurable.
+If a refresh cap is retained, it should be documented only as an optional emergency/operator override rather than the normal default behavior.
 
 ---
 
@@ -76,5 +76,6 @@ The refresh subset should be budget-aware and configurable.
 - [ ] `fundamentals` rows include the extended fields required by the factor model
 - [ ] annual fundamentals history is present in the database
 - [ ] nightly price ingest includes `SPY`
-- [ ] nightly ingest refreshes only a budgeted subset of active symbols
+- [ ] nightly ingest refreshes the full screened universe by default
+- [ ] any retained refresh cap is documented as an optional operator override only
 - [ ] tests cover both extended field mapping and refresh-selection behavior

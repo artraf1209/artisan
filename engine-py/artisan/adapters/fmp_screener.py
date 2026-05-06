@@ -44,10 +44,10 @@ class FmpScreenerAdapter:
 
     def screen(self, top_n: int | None = None) -> list[str]:
         """
-        Return top-N symbols by market cap passing universe definition filters.
+        Return the full qualified symbol set by default, optionally capped by top_n.
         Raises when no supported screener endpoint is currently usable.
         """
-        top_n = top_n or settings.screener_top_n
+        top_n = settings.screener_top_n if top_n is None else top_n
         rows = self._screen_rows()
 
         qualified = []
@@ -61,10 +61,11 @@ class FmpScreenerAdapter:
                 continue
             qualified.append(r)
 
-        # Sort by market cap descending, take top N
+        # Sort by market cap descending; top_n acts only as an optional override.
         qualified.sort(key=lambda r: r.get("marketCap") or 0, reverse=True)
-        symbols = [r["symbol"] for r in qualified[:top_n] if r.get("symbol")]
-        logger.info("Screener: %d qualified symbols, returning top %d", len(qualified), len(symbols))
+        selected = qualified if top_n is None or top_n <= 0 else qualified[:top_n]
+        symbols = [r["symbol"] for r in selected if r.get("symbol")]
+        logger.info("Screener: %d qualified symbols, returning %d", len(qualified), len(symbols))
         return symbols
 
     def _screen_rows(self) -> list[dict]:

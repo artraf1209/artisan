@@ -168,10 +168,13 @@ def refresh_universe(db, strategy_id: str, screener: FmpScreenerAdapter) -> dict
 def _select_fundamental_refresh_symbols(
     db,
     symbols: list[str],
-    refresh_limit: int,
+    refresh_limit: int | None,
 ) -> list[str]:
-    if not symbols or refresh_limit <= 0:
+    if not symbols:
         return []
+
+    if refresh_limit is None or refresh_limit <= 0:
+        return list(symbols)
 
     rows = (
         db.table("fundamentals")

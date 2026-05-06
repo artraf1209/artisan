@@ -132,6 +132,19 @@ def test_select_fundamental_refresh_symbols_prioritizes_missing_then_stale() -> 
     assert symbols == ["NVDA", "MSFT"]
 
 
+def test_select_fundamental_refresh_symbols_returns_full_universe_when_uncapped() -> None:
+    db = FakeDB(
+        fundamental_rows=[
+            {"symbol": "AAPL", "fetched_at": "2026-05-04T00:00:00+00:00"},
+            {"symbol": "MSFT", "fetched_at": "2026-04-01T00:00:00+00:00"},
+        ]
+    )
+
+    symbols = _select_fundamental_refresh_symbols(db, ["AAPL", "MSFT", "NVDA"], refresh_limit=None)
+
+    assert symbols == ["AAPL", "MSFT", "NVDA"]
+
+
 def test_refresh_universe_reports_degraded_state_when_screener_is_unavailable() -> None:
     class BrokenScreener:
         def screen(self, top_n=None):
@@ -143,7 +156,7 @@ def test_refresh_universe_reports_degraded_state_when_screener_is_unavailable() 
     assert result["symbols"] == ["AAPL", "MSFT"]
 
 
-def test_run_nightly_ingest_allows_zero_refresh_targets_when_budgeted(monkeypatch) -> None:
+def test_run_nightly_ingest_refreshes_full_universe_when_uncapped(monkeypatch) -> None:
     db = FakeDB(
         fundamental_rows=[
             {"symbol": "AAPL", "fetched_at": "2026-05-04T00:00:00+00:00"},
@@ -158,7 +171,7 @@ def test_run_nightly_ingest_allows_zero_refresh_targets_when_budgeted(monkeypatc
     monkeypatch.setattr(
         nightly_ingest,
         "settings",
-        replace(nightly_ingest.settings, fundamentals_refresh_limit=0),
+        replace(nightly_ingest.settings, fundamentals_refresh_limit=None),
     )
 
     summary = run_nightly_ingest(
@@ -170,9 +183,9 @@ def test_run_nightly_ingest_allows_zero_refresh_targets_when_budgeted(monkeypatc
         refresh_universe_from_screener=False,
     )
 
-    assert summary["fundamental_targets"] == 0
-    assert summary["fundamental_rows"] == 0
-    assert fundamentals.synced == []
+    assert summary["fundamental_targets"] == 2
+    assert summary["fundamental_rows"] == 2
+    assert fundamentals.synced == ["AAPL", "MSFT"]
 
 
 def test_fmp_quota_guard_blocks_pre_reset_window(monkeypatch) -> None:
