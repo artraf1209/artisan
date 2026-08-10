@@ -7,6 +7,7 @@ import {
   type SettingsRowDefinition,
   type StrategySettingsFormValues,
 } from '@/lib/settings'
+import type { StrategyGroupDisclosure } from '@/lib/strategy-disclosures'
 
 function formatLastModified(value: string | null) {
   if (!value) {
@@ -31,11 +32,13 @@ export default function SettingsEditor({
   strategyName,
   initialValues,
   lastModifiedAt,
+  groupDisclosures,
 }: {
   strategyId: string
   strategyName: string
   initialValues: StrategySettingsFormValues
   lastModifiedAt: string | null
+  groupDisclosures?: Partial<Record<string, StrategyGroupDisclosure>>
 }) {
   const router = useRouter()
   const [values, setValues] = useState<StrategySettingsFormValues>(initialValues)
@@ -133,6 +136,9 @@ export default function SettingsEditor({
               <h3 className="text-lg font-semibold tracking-[-0.03em] text-foreground">
                 {group.title}
               </h3>
+              {groupDisclosures?.[group.id] ? (
+                <GroupDisclosure disclosure={groupDisclosures[group.id]!} />
+              ) : null}
             </div>
 
             <div className="divide-y divide-border/70">
@@ -170,6 +176,54 @@ export default function SettingsEditor({
         </div>
       </div>
     </section>
+  )
+}
+
+function GroupDisclosure({
+  disclosure,
+}: {
+  disclosure: StrategyGroupDisclosure
+}) {
+  return (
+    <div className="mt-4 rounded-[1.2rem] border border-border/70 bg-card/80 p-4">
+      <p className="text-sm leading-6 text-muted-foreground">{disclosure.summary}</p>
+
+      {disclosure.badges?.length ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {disclosure.badges.map((badge) => (
+            <span
+              key={badge}
+              className="rounded-full border border-border/70 bg-background/60 px-2.5 py-1 text-[0.68rem] font-medium uppercase tracking-[0.16em] text-muted-foreground"
+            >
+              {badge}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {disclosure.formulaLines?.length ? (
+        <pre className="mt-3 overflow-x-auto rounded-[1rem] border border-border/70 bg-background/70 px-4 py-3 text-xs leading-6 text-foreground">
+          <code>{disclosure.formulaLines.join('\n')}</code>
+        </pre>
+      ) : null}
+
+      {disclosure.detailsLabel && disclosure.detailsLines?.length ? (
+        <details className="mt-3 rounded-[1rem] border border-border/70 bg-background/50 px-4 py-3">
+          <summary className="cursor-pointer text-sm font-medium text-foreground">
+            {disclosure.detailsLabel}
+          </summary>
+          <ul className="mt-3 space-y-2 text-sm leading-6 text-muted-foreground">
+            {disclosure.detailsLines.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {disclosure.footnote ? (
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">{disclosure.footnote}</p>
+      ) : null}
+    </div>
   )
 }
 
