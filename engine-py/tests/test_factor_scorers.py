@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
@@ -8,6 +10,31 @@ from artisan.scorers.growth_scorer import compute_growth_scores
 from artisan.scorers.low_vol_scorer import compute_low_vol_scores
 from artisan.scorers.quality_scorer import compute_quality_scores
 from artisan.scorers.value_scorer import compute_value_scores
+from artisan.strategy_params import StrategyParams
+
+TEST_STRATEGY_PARAMS = StrategyParams(
+    risk_per_trade_pct=0.01,
+    max_position_pct=0.10,
+    max_concurrent_positions=15,
+    max_sector_exposure_pct=0.25,
+    max_portfolio_heat_pct=0.08,
+    daily_drawdown_kill_switch_pct=-0.03,
+    max_drawdown_tolerance_pct=0.18,
+    shortlist_size=30,
+    daily_recommendation_cap=10,
+    factor_weights={"value": 0.25, "quality": 0.25, "momentum": 0.25, "low_vol": 0.10, "growth": 0.15},
+    max_holding_period_days=30,
+    horizon_baseline_days={"pullback": 20, "breakout": 15, "squeeze": 10},
+    regime_multipliers={"risk_on": 1.0, "neutral": 0.85, "risk_off": 0.65},
+    earnings_blackout_pre_days=3,
+    earnings_blackout_post_days=1,
+    trailing_stop_atr_multiple=2,
+    breakeven_trigger_r=1,
+    auto_apply_stop_tightening=True,
+    target_annual_return_pct=0.25,
+    benchmark_symbol="SPY",
+    llm_daily_cost_cap_usd=5.0,
+)
 
 
 def test_compute_value_scores_prefers_cheaper_names() -> None:
@@ -279,6 +306,8 @@ def test_score_universe_marks_hard_filter_failures_unranked() -> None:
     results = score_universe(
         db=db,
         strategy_id="strategy-1",
+        strategy_params=TEST_STRATEGY_PARAMS,
+        run_id="run-1",
         fundamentals=fundamentals,
         income_history=history,
         price_df=price_df,
@@ -295,5 +324,99 @@ def test_score_universe_marks_hard_filter_failures_unranked() -> None:
     assert aapl_row["hard_filter_pass"] is True
     assert aapl_row["rank"] is not None
     assert aapl_row["value_prev"] == 0.25
+    assert aapl_row["run_id"] == "run-1"
+    # AAPL was already in the prior run's top-30 (rank=2) -> not new; MSFT wasn't -> new
+    assert aapl_row["is_new"] is False
+    msft_row = next(row for row in results if row["symbol"] == "MSFT")
+    assert msft_row["is_new"] is True
     assert db.factor_scores.upserts[0]["on_conflict"] == "symbol,strategy_id,scored_at"
     assert len(db.factor_scores.upserts[0]["rows"]) == 3
+
+
+def test_score_universe_reads_factor_weights_and_shortlist_size_from_strategy_params() -> None:
+    """Config-driven wiring: different factor_weights/shortlist_size change the output
+    without any code change, proving there's no hardcoded FACTOR_WEIGHTS/top-N left."""
+
+    class NoopFactorScoresQuery:
+        def select(self, _fields: str):
+            return self
+
+        def eq(self, _column: str, _value):
+            return self
+
+        def order(self, _column: str, desc: bool = False):
+            return self
+
+        def limit(self, _limit: int):
+            return self
+
+        def upsert(self, rows, on_conflict: str):
+            self.upserted = rows
+            return self
+
+        def execute(self):
+            return type("Response", (), {"data": getattr(self, "upserted", [])})()
+
+    class NoopDB:
+        def __init__(self) -> None:
+            self.factor_scores = NoopFactorScoresQuery()
+
+        def table(self, _name: str):
+            return self.factor_scores
+
+    fundamentals = [
+        {
+            "symbol": "VALUE_HEAVY",
+            "fcf": 40.0, "ebitda": 50.0, "total_debt": 20.0, "cash": 10.0,
+            "net_income": 30.0, "book_equity": 100.0, "revenue": 220.0, "market_cap": 60.0,
+            "gross_profit": 60.0, "total_assets": 150.0, "roe": 0.10, "operating_cash_flow": 20.0,
+            "interest_expense": 3.0,
+        },
+        {
+            "symbol": "QUALITY_HEAVY",
+            "fcf": 20.0, "ebitda": 30.0, "total_debt": 20.0, "cash": 10.0,
+            "net_income": 30.0, "book_equity": 100.0, "revenue": 220.0, "market_cap": 220.0,
+            "gross_profit": 95.0, "total_assets": 180.0, "roe": 0.25, "operating_cash_flow": 45.0,
+            "interest_expense": 1.0,
+        },
+    ]
+    history = {
+        "VALUE_HEAVY": [{"revenue": 220.0, "eps": 7.0, "fcf": 40.0}] * 4,
+        "QUALITY_HEAVY": [{"revenue": 220.0, "eps": 7.0, "fcf": 20.0}] * 4,
+    }
+    dates = pd.date_range("2025-01-01", periods=300, freq="B")
+    price_df = pd.DataFrame(
+        {"VALUE_HEAVY": np.full(len(dates), 100.0), "QUALITY_HEAVY": np.full(len(dates), 100.0)},
+        index=dates,
+    )
+    spy_series = pd.Series(np.full(len(dates), 100.0), index=dates)
+    sectors = {"VALUE_HEAVY": "Tech", "QUALITY_HEAVY": "Tech"}
+
+    value_tilted = replace(
+        TEST_STRATEGY_PARAMS,
+        factor_weights={"value": 0.9, "quality": 0.025, "momentum": 0.025, "low_vol": 0.025, "growth": 0.025},
+        shortlist_size=1,
+    )
+    quality_tilted = replace(
+        TEST_STRATEGY_PARAMS,
+        factor_weights={"value": 0.025, "quality": 0.9, "momentum": 0.025, "low_vol": 0.025, "growth": 0.025},
+        shortlist_size=1,
+    )
+
+    value_run = score_universe(
+        db=NoopDB(), strategy_id="strategy-1", strategy_params=value_tilted, run_id="run-a",
+        fundamentals=fundamentals, income_history=history, price_df=price_df,
+        spy_series=spy_series, sectors=sectors, scored_at="2026-05-04T13:30:00+00:00",
+    )
+    quality_run = score_universe(
+        db=NoopDB(), strategy_id="strategy-1", strategy_params=quality_tilted, run_id="run-b",
+        fundamentals=fundamentals, income_history=history, price_df=price_df,
+        spy_series=spy_series, sectors=sectors, scored_at="2026-05-04T13:30:00+00:00",
+    )
+
+    value_winner = next(r["symbol"] for r in value_run if r["rank"] == 1)
+    quality_winner = next(r["symbol"] for r in quality_run if r["rank"] == 1)
+    assert value_winner == "VALUE_HEAVY"
+    assert quality_winner == "QUALITY_HEAVY"
+    # shortlist_size=1 -> only the top-ranked symbol can be flagged is_new
+    assert sum(1 for r in value_run if r["is_new"]) <= 1

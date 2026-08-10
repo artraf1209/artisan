@@ -12,22 +12,17 @@ from artisan.scorers.low_vol_scorer import compute_low_vol_scores
 from artisan.scorers.momentum_scorer import compute_momentum_scores
 from artisan.scorers.quality_scorer import compute_quality_scores
 from artisan.scorers.value_scorer import compute_value_scores
+from artisan.strategy_params import StrategyParams
 
 logger = logging.getLogger(__name__)
-
-FACTOR_WEIGHTS: dict[str, float] = {
-    "value": 0.25,
-    "quality": 0.25,
-    "momentum": 0.25,
-    "low_vol": 0.10,
-    "growth": 0.15,
-}
 
 
 def score_universe(
     *,
     db: Any,
     strategy_id: str,
+    strategy_params: StrategyParams,
+    run_id: str,
     fundamentals: list[dict[str, Any]],
     income_history: dict[str, list[dict[str, Any]]],
     price_df: pd.DataFrame,
@@ -41,8 +36,13 @@ def score_universe(
 
     Only symbols passing hard_filters appear in factor_scores with hard_filter_pass=True.
     All others are stored with hard_filter_pass=False and null z-scores.
+
+    factor_weights and shortlist_size come from strategy_params (strategies.
+    screening_params, seeded in v2-02) — editable via /settings, never hardcoded.
     """
     scored_at = scored_at or datetime.now(timezone.utc).isoformat()
+    factor_weights = strategy_params.factor_weights
+    shortlist_size = strategy_params.shortlist_size
 
     # ── Build DataFrames ──────────────────────────────────────────────────
     fund_df = pd.DataFrame(fundamentals).set_index("symbol") if fundamentals else pd.DataFrame()
@@ -64,8 +64,11 @@ def score_universe(
 
     # Fetch previous run scores for delta computation
     prev_scores: dict[str, dict] = _fetch_prev_scores(db, strategy_id)
-    # Previous top-N symbols (for is_new flag)
-    prev_top_symbols: set[str] = {s for s, r in prev_scores.items() if r.get("rank") is not None}
+    # Previous top-N (shortlist) symbols, for the is_new flag
+    prev_top_symbols: set[str] = {
+        s for s, r in prev_scores.items()
+        if r.get("rank") is not None and r["rank"] <= shortlist_size
+    }
 
     results: list[dict[str, Any]] = []
 
@@ -82,11 +85,11 @@ def score_universe(
 
         # Composite weighted score
         composite_z = (
-            FACTOR_WEIGHTS["value"] * value_z.fillna(0)
-            + FACTOR_WEIGHTS["quality"] * quality_z.fillna(0)
-            + FACTOR_WEIGHTS["momentum"] * momentum_z.fillna(0)
-            + FACTOR_WEIGHTS["low_vol"] * low_vol_z.fillna(0)
-            + FACTOR_WEIGHTS["growth"] * growth_z.fillna(0)
+            factor_weights["value"] * value_z.fillna(0)
+            + factor_weights["quality"] * quality_z.fillna(0)
+            + factor_weights["momentum"] * momentum_z.fillna(0)
+            + factor_weights["low_vol"] * low_vol_z.fillna(0)
+            + factor_weights["growth"] * growth_z.fillna(0)
         )
 
         # Rank (1 = best)
@@ -94,9 +97,11 @@ def score_universe(
 
         for sym in passing:
             prev = prev_scores.get(sym, {})
+            rank = int(ranks.get(sym)) if sym in ranks.index else None
             row = {
                 "symbol": sym,
                 "strategy_id": strategy_id,
+                "run_id": run_id,
                 "scored_at": scored_at,
                 "hard_filter_pass": True,
                 "sector": sectors.get(sym),
@@ -106,8 +111,8 @@ def score_universe(
                 "low_vol_z": _safe(low_vol_z.get(sym)),
                 "growth_z": _safe(growth_z.get(sym)),
                 "composite_z": _safe(composite_z.get(sym)),
-                "rank": int(ranks.get(sym)) if sym in ranks.index else None,
-                "is_new": sym not in prev_top_symbols,
+                "rank": rank,
+                "is_new": rank is not None and rank <= shortlist_size and sym not in prev_top_symbols,
                 "value_prev": prev.get("value_z"),
                 "quality_prev": prev.get("quality_z"),
                 "momentum_prev": prev.get("momentum_z"),
@@ -121,6 +126,7 @@ def score_universe(
         results.append({
             "symbol": sym,
             "strategy_id": strategy_id,
+            "run_id": run_id,
             "scored_at": scored_at,
             "hard_filter_pass": False,
             "sector": sectors.get(sym),
