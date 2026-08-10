@@ -27,6 +27,33 @@ AGENT_MODELS: dict[str, str] = {
     "position_review": MODEL_SONNET,
 }
 
+_anthropic_client: Any = None
+
+
+def get_anthropic_client() -> Any:
+    """Lazily constructs the shared Anthropic client (singleton, mirrors
+    artisan/db/client.py's get_client() pattern). Import is deferred so the
+    anthropic package is only required at call time, not at module import."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+
+        from artisan.config import settings
+
+        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
+
+class AgentOutputError(ValueError):
+    """Raised when an agent's parsed tool-call output is missing a required field —
+    treated as an error, never a silently-accepted partial result."""
+
+
+def validate_required_fields(output: dict[str, Any], required_fields: tuple[str, ...], agent_name: str) -> None:
+    missing = [f for f in required_fields if f not in output]
+    if missing:
+        raise AgentOutputError(f"{agent_name} output missing required field(s): {', '.join(missing)}")
+
 
 def load_prompt(agent_name: str) -> str:
     """Reads prompts/<agent_name>.md — copied verbatim from artisan-v2-agent-prompts.md."""
