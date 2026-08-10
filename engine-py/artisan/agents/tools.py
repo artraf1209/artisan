@@ -5,6 +5,7 @@ from typing import Any
 from artisan.db.client import get_client
 
 THESIS_TRUNCATE_AT = 240
+DEFAULT_FUNDAMENTALS_YEARS = 5
 
 
 def query_decision_history(
@@ -101,4 +102,33 @@ def _fetch_thesis_summaries(db: Any, rows: list[dict[str, Any]]) -> dict[str, st
         if thesis:
             truncated = thesis[:THESIS_TRUNCATE_AT]
             summaries[row["id"]] = truncated + ("…" if len(thesis) > THESIS_TRUNCATE_AT else "")
+    return summaries
+
+
+def get_fundamentals_detail(
+    symbol: str,
+    fields: list[str] | None = None,
+    years: int = DEFAULT_FUNDAMENTALS_YEARS,
+    *,
+    db: Any = None,
+) -> dict[str, Any]:
+    """The Fundamental Analyst's tool for pulling specific line items or a
+    longer history than what's pre-loaded in its context for a symbol."""
+    db = db or get_client()
+
+    rows: list[dict[str, Any]] = (
+        db.table("fundamentals")
+        .select("*")
+        .eq("symbol", symbol)
+        .order("period_end", desc=True)
+        .limit(years)
+        .execute()
+        .data
+    )
+
+    if fields:
+        keep = set(fields) | {"symbol", "period_end", "period_type"}
+        rows = [{k: v for k, v in row.items() if k in keep} for row in rows]
+
+    return {"symbol": symbol, "history": rows}
     return summaries
