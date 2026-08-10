@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { loadLatestCompletedRunContext } from '@/lib/latest-completed-run'
 import { createServerClient } from '@/lib/supabase/server'
 import { enterEligibleRankCutoff } from '@/lib/strategy'
 
@@ -26,12 +27,7 @@ export async function GET(request: NextRequest) {
       strategies[0] ??
       null
 
-    const { data: latestRegime } = await supabase
-      .from('regime_snapshots')
-      .select('run_id, regime, date')
-      .order('date', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const { regime: latestRegime } = await loadLatestCompletedRunContext(supabase)
 
     if (!selectedStrategy || !latestRegime?.run_id) {
       return NextResponse.json({

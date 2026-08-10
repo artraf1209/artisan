@@ -1,4 +1,5 @@
 import SettingsEditor from '@/components/settings/SettingsEditor'
+import { loadLatestCompletedRunContext } from '@/lib/latest-completed-run'
 import { createServerClient } from '@/lib/supabase/server'
 import { buildStrategyGroupDisclosures } from '@/lib/strategy-disclosures'
 import {
@@ -41,7 +42,7 @@ function formatMultiple(value: number | null, decimals = 2) {
 export default async function StrategyConfigPage() {
   const supabase = (await createServerClient()) as any
 
-  const [{ data: strategy, error: strategyError }, { data: latestRegime }, { data: latestSnapshot }] =
+  const [{ data: strategy, error: strategyError }, latestRunContext, { data: latestSnapshot }] =
     await Promise.all([
       supabase
         .from('strategies')
@@ -52,12 +53,7 @@ export default async function StrategyConfigPage() {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
-      supabase
-        .from('regime_snapshots')
-        .select('regime, date')
-        .order('date', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
+      loadLatestCompletedRunContext(supabase),
       supabase
         .from('portfolio_snapshots')
         .select('equity, drawdown_from_high_pct, snapshot_date')
@@ -107,6 +103,7 @@ export default async function StrategyConfigPage() {
     latestEquity == null
       ? null
       : latestEquity * strategyConfig.risk_params.max_position_pct
+  const latestRegime = latestRunContext.regime
   const currentRegime = (latestRegime?.regime as string | null) ?? null
   const activeRegimeMultiplier =
     currentRegime && currentRegime in strategyConfig.timing_params.regime_multipliers

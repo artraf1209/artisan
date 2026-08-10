@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import StatusBadge from '@/components/shared/StatusBadge'
+import { loadLatestCompletedRunContext } from '@/lib/latest-completed-run'
 import { createServerClient } from '@/lib/supabase/server'
 import { enterEligibleRankCutoff } from '@/lib/strategy'
 import { formatCurrency } from '@/lib/utils'
@@ -111,19 +112,12 @@ export default async function ShortlistPage({
   const requestedStrategyId = firstValue(params?.strategy)
   const supabase = (await createServerClient()) as any
 
-  const [{ data: strategiesData }, { data: latestRegimeData }] = await Promise.all([
+  const [{ data: strategiesData }, latestRunContext] = await Promise.all([
     supabase
       .from('strategies')
       .select('id, name, screening_params')
       .order('created_at', { ascending: false }),
-    supabase
-      .from('regime_snapshots')
-      .select(
-        'run_id, date, regime, spy_close, spy_sma50, spy_sma200, spy_adx14, spy_vol_percentile_252d, spy_drawdown_from_high_pct',
-      )
-      .order('date', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+    loadLatestCompletedRunContext(supabase),
   ])
 
   const strategies = (strategiesData ?? []) as StrategyRow[]
@@ -131,7 +125,7 @@ export default async function ShortlistPage({
     strategies.find((strategy) => strategy.id === requestedStrategyId) ??
     strategies[0] ??
     null
-  const latestRegime = (latestRegimeData ?? null) as RegimeRow | null
+  const latestRegime = (latestRunContext.regime ?? null) as RegimeRow | null
 
   const shortlistSize = Number(selectedStrategy?.screening_params?.shortlist_size ?? 30)
   const cutoff = enterEligibleRankCutoff(latestRegime?.regime ?? 'neutral', shortlistSize)
