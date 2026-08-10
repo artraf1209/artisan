@@ -59,8 +59,8 @@ class TechnicalScorer:
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14, min_periods=14).mean()
-        avg_loss = loss.rolling(window=14, min_periods=14).mean()
+        avg_gain = gain.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
         avg_loss_safe = avg_loss.replace(0, 1e-10)
         rs = avg_gain / avg_loss_safe
         rsi = 100 - (100 / (1 + rs))
@@ -75,6 +75,7 @@ class TechnicalScorer:
         bb_std = close.rolling(window=20, min_periods=20).std()
         bb_upper = bb_mid + (2 * bb_std)
         bb_lower = bb_mid - (2 * bb_std)
+        bb_bandwidth = (bb_upper - bb_lower) / bb_mid.replace(0, float("nan"))
 
         previous_close = close.shift(1)
         true_range = pd.concat(
@@ -130,6 +131,7 @@ class TechnicalScorer:
             "_volume_series": volume,
             "_obv_series": obv,
             "_macd_hist_series": macd_hist,
+            "_bb_bandwidth_series": bb_bandwidth,
         }
         return snapshot
 

@@ -7,6 +7,10 @@ import pytest
 
 from artisan.strategy_params import StrategyParams
 from artisan.timing.entry_gates import (
+    _confirmed_breakout,
+    _confirmed_pullback,
+    _confirmed_squeeze,
+    _detect_setup,
     compute_effective_horizon,
     compute_performance_multiplier,
     evaluate_entry,
@@ -20,7 +24,7 @@ TEST_STRATEGY_PARAMS = StrategyParams(
     max_portfolio_heat_pct=0.08,
     daily_drawdown_kill_switch_pct=-0.03,
     max_drawdown_tolerance_pct=0.18,
-    shortlist_size=30,
+    shortlist_size=50,
     daily_recommendation_cap=10,
     factor_weights={"value": 0.25, "quality": 0.25, "momentum": 0.25, "low_vol": 0.10, "growth": 0.15},
     max_holding_period_days=30,
@@ -88,9 +92,14 @@ def test_evaluate_entry_requires_positive_sma200_slope() -> None:
     assert row["effective_horizon_days"] is None  # no setup_type detected
 
 
-def test_evaluate_entry_requires_relative_strength_vs_spy() -> None:
+def test_evaluate_entry_pullback_confirmation_does_not_require_relative_strength_vs_spy() -> None:
+    """Tier 1 fix: pullback confirmation looks at the turn itself (MACD histogram
+    improving, volume not collapsing) rather than a quarter of SPY-outperformance —
+    gate_trend has already validated the broader uptrend, so re-demanding relative
+    strength at the exact moment price is dipping just asks the dip not to look
+    like a dip."""
     stock = [100.0 + (idx * 0.25) for idx in range(260)]
-    spy = [100.0 + (idx * 0.45) for idx in range(260)]
+    spy = [100.0 + (idx * 0.45) for idx in range(260)]  # stock underperforms SPY
 
     row = evaluate_entry(
         symbol="AAPL",
@@ -105,9 +114,9 @@ def test_evaluate_entry_requires_relative_strength_vs_spy() -> None:
     )
 
     assert row["gate_trend"] is True
-    assert row["setup_type"] is not None
-    assert row["gate_confirmed"] is False
-    assert row["actionable"] is False
+    assert row["setup_type"] == "pullback"
+    assert row["gate_confirmed"] is True
+    assert row["actionable"] is True
 
 
 def test_evaluate_entry_risk_off_regime_does_not_hard_block_actionable() -> None:
@@ -150,6 +159,123 @@ def test_evaluate_entry_populates_effective_horizon_when_setup_detected() -> Non
     assert row["setup_type"] is not None
     expected = compute_effective_horizon(row["setup_type"], "neutral", 1.0, TEST_STRATEGY_PARAMS)
     assert row["effective_horizon_days"] == expected
+
+
+def _breakout_confirmation_snapshot(rsi: float, vol_ratio: float) -> dict:
+    n = 40
+    close_series = pd.Series([100.0 + idx for idx in range(n)], dtype=float)
+    obv_series = pd.Series([1000.0 + (idx * 50) for idx in range(n)], dtype=float)
+    macd_hist_series = pd.Series([0.1 + (idx / 1000) for idx in range(n)], dtype=float)
+    return {
+        "rsi_14": rsi,
+        "macd_hist": macd_hist_series.iloc[-1],
+        "vol_ratio": vol_ratio,
+        "_macd_hist_series": macd_hist_series,
+        "_obv_series": obv_series,
+        "_close_series": close_series,
+    }
+
+
+class TestConfirmedBreakout:
+    lagging_spy = staticmethod(lambda: _spy_df([100.0 + (idx * 0.5) for idx in range(40)]))
+
+    def test_confirms_with_rsi_running_hot_up_to_80(self) -> None:
+        snapshot = _breakout_confirmation_snapshot(rsi=78.0, vol_ratio=1.5)
+        assert _confirmed_breakout(snapshot, self.lagging_spy()) is True
+
+    def test_rejects_rsi_at_or_above_80(self) -> None:
+        snapshot = _breakout_confirmation_snapshot(rsi=80.0, vol_ratio=1.5)
+        assert _confirmed_breakout(snapshot, self.lagging_spy()) is False
+
+    def test_rejects_thin_volume(self) -> None:
+        snapshot = _breakout_confirmation_snapshot(rsi=65.0, vol_ratio=1.0)
+        assert _confirmed_breakout(snapshot, self.lagging_spy()) is False
+
+    def test_rejects_when_stock_trails_spy_over_short_lookback(self) -> None:
+        snapshot = _breakout_confirmation_snapshot(rsi=65.0, vol_ratio=1.5)
+        hot_spy = _spy_df([100.0 + (idx * 2) for idx in range(40)])
+        assert _confirmed_breakout(snapshot, hot_spy) is False
+
+
+def _pullback_confirmation_snapshot(macd_rising: bool, vol_ratio: float) -> dict:
+    if macd_rising:
+        macd_hist_series = pd.Series([0.0, -0.1, -0.05, 0.02], dtype=float)
+    else:
+        macd_hist_series = pd.Series([0.2, 0.1, 0.05, -0.1], dtype=float)
+    return {"_macd_hist_series": macd_hist_series, "vol_ratio": vol_ratio}
+
+
+class TestConfirmedPullback:
+    def test_confirms_on_improving_macd_with_volume_not_collapsing(self) -> None:
+        snapshot = _pullback_confirmation_snapshot(macd_rising=True, vol_ratio=0.9)
+        assert _confirmed_pullback(snapshot, spy_df=None) is True
+
+    def test_rejects_when_macd_still_deteriorating(self) -> None:
+        snapshot = _pullback_confirmation_snapshot(macd_rising=False, vol_ratio=0.9)
+        assert _confirmed_pullback(snapshot, spy_df=None) is False
+
+    def test_rejects_collapsing_volume(self) -> None:
+        snapshot = _pullback_confirmation_snapshot(macd_rising=True, vol_ratio=0.5)
+        assert _confirmed_pullback(snapshot, spy_df=None) is False
+
+
+def _squeeze_confirmation_snapshot(expanding_range: bool, vol_ratio: float) -> dict:
+    n = 20
+    flat_true_range = [1.0] * (n - 1)
+    last_bar_range = 3.0 if expanding_range else 0.5
+    high_series = pd.Series([100.0] * (n - 1) + [100.0 + last_bar_range], dtype=float)
+    low_series = pd.Series([100.0 - r for r in flat_true_range] + [100.0], dtype=float)
+    close_series = pd.Series([100.0] * n, dtype=float)
+    return {
+        "_high_series": high_series,
+        "_low_series": low_series,
+        "_close_series": close_series,
+        "vol_ratio": vol_ratio,
+    }
+
+
+class TestConfirmedSqueeze:
+    def test_confirms_on_range_expansion_with_volume_ticking_up(self) -> None:
+        snapshot = _squeeze_confirmation_snapshot(expanding_range=True, vol_ratio=1.0)
+        assert _confirmed_squeeze(snapshot, spy_df=None) is True
+
+    def test_rejects_without_range_expansion(self) -> None:
+        snapshot = _squeeze_confirmation_snapshot(expanding_range=False, vol_ratio=1.0)
+        assert _confirmed_squeeze(snapshot, spy_df=None) is False
+
+    def test_rejects_without_volume_uptick(self) -> None:
+        snapshot = _squeeze_confirmation_snapshot(expanding_range=True, vol_ratio=0.8)
+        assert _confirmed_squeeze(snapshot, spy_df=None) is False
+
+
+def _squeeze_detection_snapshot(bandwidth_values: list[float]) -> dict:
+    n = len(bandwidth_values)
+    # _detect_setup reads "close" off _close_series.iloc[-1], not the "close" key,
+    # so the last close must actually sit above bb_mid for above_mid to be True.
+    close_series = pd.Series([100.0] * (n - 1) + [100.5], dtype=float)
+    return {
+        "close": 100.5,
+        "bb_mid": 100.0,
+        "rsi_14": 55.0,  # outside the pullback band so pullback doesn't pre-empt squeeze
+        "vol_ratio": 1.0,  # below the breakout threshold so breakout doesn't pre-empt squeeze
+        "_close_series": close_series,
+        "_high_series": close_series + 0.5,
+        "_low_series": close_series - 0.5,
+        "_volume_series": pd.Series([1_000_000.0] * n),
+        "_bb_bandwidth_series": pd.Series(bandwidth_values, dtype=float),
+    }
+
+
+class TestAdaptiveBollingerSqueezeDetection:
+    def test_detects_squeeze_when_bandwidth_hits_a_multi_month_low(self) -> None:
+        bandwidth_values = [0.15] * 129 + [0.01]
+        snapshot = _squeeze_detection_snapshot(bandwidth_values)
+        assert _detect_setup(snapshot) == "squeeze"
+
+    def test_no_squeeze_when_todays_bandwidth_is_not_a_multi_month_low(self) -> None:
+        bandwidth_values = [0.05 + (idx * 0.15 / 129) for idx in range(130)]  # trending wider, not tighter
+        snapshot = _squeeze_detection_snapshot(bandwidth_values)
+        assert _detect_setup(snapshot) is None
 
 
 class TestComputePerformanceMultiplier:

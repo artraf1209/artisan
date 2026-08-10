@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pandas as pd
+import pytest
+
 from artisan.scorers.technical import TechnicalScorer
 
 
@@ -95,3 +98,34 @@ def test_technical_scorer_uses_latest_history_window_for_close_snapshot() -> Non
     result = scorer.score_symbol("AAPL", computed_at="2026-05-04T13:30:00+00:00")
 
     assert result["close"] == rows[-1]["close"]
+
+
+def test_compute_indicator_snapshot_rsi_uses_wilders_smoothing() -> None:
+    rows = _price_rows(count=60)
+
+    snapshot = TechnicalScorer.compute_indicator_snapshot(rows)
+
+    frame = pd.DataFrame(rows).sort_values("bar_time")
+    close = frame["close"].astype(float)
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
+    expected_rsi = (100 - (100 / (1 + rs))).iloc[-1]
+
+    assert snapshot["rsi_14"] == pytest.approx(expected_rsi)
+
+
+def test_compute_indicator_snapshot_exposes_bollinger_bandwidth_series() -> None:
+    rows = _price_rows(count=60)
+
+    snapshot = TechnicalScorer.compute_indicator_snapshot(rows)
+
+    bandwidth_series = snapshot["_bb_bandwidth_series"]
+    latest_bandwidth = bandwidth_series.dropna().iloc[-1]
+
+    assert latest_bandwidth == pytest.approx(
+        (snapshot["bb_upper"] - snapshot["bb_lower"]) / snapshot["bb_mid"]
+    )

@@ -19,6 +19,14 @@ ADX_TREND_THRESHOLD = 20.0
 # performance_multiplier drops to this once drawdown reaches half of max_drawdown_tolerance_pct
 PERFORMANCE_MULTIPLIER_DROP = 0.8
 
+BB_SQUEEZE_LOOKBACK = 126       # ~6 trading months
+BB_SQUEEZE_PERCENTILE = 0.10    # today's bandwidth must be in the bottom 10% of that window
+
+BREAKOUT_OBV_LOOKBACK = 10
+BREAKOUT_RS_LOOKBACK = 20
+PULLBACK_MACD_LOOKBACK = 3
+SQUEEZE_TR_LOOKBACK = 14
+
 
 def _market_regime_ok(regime: str | None) -> bool | None:
     """Gate 0 (informational): reads the once-per-run regime from regime_snapshots
@@ -125,58 +133,133 @@ def _detect_setup(snapshot: dict[str, Any]) -> str | None:
 
     # ── Squeeze setup ─────────────────────────────────────────────────────
     bb_mid = snapshot.get("bb_mid")
-    bb_upper = snapshot.get("bb_upper")
-    bb_lower = snapshot.get("bb_lower")
-    if bb_mid and bb_upper and bb_lower and len(close_series) >= 120:
-        # Use current bandwidth vs historical — simplified check
-        current_bw = (bb_upper - bb_lower) / bb_mid if bb_mid else 1.0
-        above_mid = close > bb_mid
-        # Squeeze: bandwidth < 5% (tight consolidation)
-        if current_bw < 0.05 and above_mid:
-            return "squeeze"
+    bb_bandwidth_series: pd.Series | None = snapshot.get("_bb_bandwidth_series")
+    if bb_mid and bb_bandwidth_series is not None:
+        recent_bw = bb_bandwidth_series.dropna().iloc[-BB_SQUEEZE_LOOKBACK:]
+        if len(recent_bw) >= int(BB_SQUEEZE_LOOKBACK * 0.8):
+            bw_threshold = recent_bw.quantile(BB_SQUEEZE_PERCENTILE)
+            current_bw = recent_bw.iloc[-1]
+            above_mid = close > bb_mid
+            # today's bandwidth sits at a multi-month low for THIS stock,
+            # not an arbitrary fixed number
+            if current_bw <= bw_threshold and above_mid:
+                return "squeeze"
 
     return None
 
 
-def _confirmed(snapshot: dict[str, Any], spy_df: pd.DataFrame | None) -> bool:
-    """Gate 3: multi-signal confirmation."""
+def _true_range_series(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+    previous_close = close.shift(1)
+    return pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+
+def _confirmed_breakout(snapshot: dict[str, Any], spy_df: pd.DataFrame | None) -> bool:
+    """A breakout is an established-momentum event: stay close to the original
+    confirmation logic, but a stock already breaking out routinely runs hotter
+    than 70 RSI, and the accumulation/relative-strength signals only need to
+    cover the breakout itself, not a full quarter."""
     rsi = snapshot.get("rsi_14")
     macd_hist = snapshot.get("macd_hist")
-    obv_series: pd.Series | None = snapshot.get("_obv_series")
     macd_hist_series: pd.Series | None = snapshot.get("_macd_hist_series")
+    obv_series: pd.Series | None = snapshot.get("_obv_series")
     close_series: pd.Series | None = snapshot.get("_close_series")
     vol_ratio = snapshot.get("vol_ratio")
 
-    # RSI not overbought
-    if rsi is None or rsi >= 70:
+    if rsi is None or rsi >= 80:
         return False
 
-    # MACD histogram positive and rising
     if macd_hist is None or macd_hist <= 0:
         return False
     if macd_hist_series is not None and len(macd_hist_series) >= 2:
         if macd_hist <= macd_hist_series.iloc[-2]:
             return False
 
-    # Volume confirmation
     if vol_ratio is None or vol_ratio < 1.2:
         return False
 
-    # OBV rising over last month
-    if obv_series is not None and len(obv_series) >= 21:
-        if obv_series.iloc[-1] <= obv_series.iloc[-21]:
+    if obv_series is not None and len(obv_series) >= BREAKOUT_OBV_LOOKBACK:
+        if obv_series.iloc[-1] <= obv_series.iloc[-BREAKOUT_OBV_LOOKBACK]:
             return False
 
-    # Relative strength vs SPY over the last quarter.
-    if close_series is None or len(close_series) < 64 or spy_df is None or len(spy_df) < 64:
+    if (
+        close_series is None
+        or len(close_series) < BREAKOUT_RS_LOOKBACK
+        or spy_df is None
+        or len(spy_df) < BREAKOUT_RS_LOOKBACK
+    ):
         return False
     spy_close = spy_df["close"].astype(float)
-    stock_return = (close_series.iloc[-1] / close_series.iloc[-64]) - 1
-    spy_return = (spy_close.iloc[-1] / spy_close.iloc[-64]) - 1
+    stock_return = (close_series.iloc[-1] / close_series.iloc[-BREAKOUT_RS_LOOKBACK]) - 1
+    spy_return = (spy_close.iloc[-1] / spy_close.iloc[-BREAKOUT_RS_LOOKBACK]) - 1
     if stock_return <= spy_return:
         return False
 
     return True
+
+
+def _confirmed_pullback(snapshot: dict[str, Any], spy_df: pd.DataFrame | None) -> bool:
+    """The uptrend is already validated by gate_trend (rising 200-SMA, ADX >= 20),
+    so don't re-demand a month of OBV accumulation or a quarter of SPY-outperformance
+    at the exact moment price is dipping. Confirm the turn itself instead."""
+    macd_hist_series: pd.Series | None = snapshot.get("_macd_hist_series")
+    vol_ratio = snapshot.get("vol_ratio")
+
+    if macd_hist_series is None or len(macd_hist_series) < PULLBACK_MACD_LOOKBACK + 1:
+        return False
+    if macd_hist_series.iloc[-1] <= macd_hist_series.iloc[-(PULLBACK_MACD_LOOKBACK + 1)]:
+        return False
+
+    if vol_ratio is None or vol_ratio <= 0.7:
+        return False
+
+    return True
+
+
+def _confirmed_squeeze(snapshot: dict[str, Any], spy_df: pd.DataFrame | None) -> bool:
+    """A squeeze is low-volatility/low-volume by construction — confirm the first
+    sign of expansion (true range breaking out above its recent average, volume
+    starting to tick up) rather than demanding the accumulation signals that
+    apply once a move is already underway."""
+    high_series: pd.Series | None = snapshot.get("_high_series")
+    low_series: pd.Series | None = snapshot.get("_low_series")
+    close_series: pd.Series | None = snapshot.get("_close_series")
+    vol_ratio = snapshot.get("vol_ratio")
+
+    if high_series is None or low_series is None or close_series is None:
+        return False
+
+    true_range = _true_range_series(high_series, low_series, close_series).dropna()
+    if len(true_range) < SQUEEZE_TR_LOOKBACK + 1:
+        return False
+
+    current_tr = true_range.iloc[-1]
+    recent_avg_tr = true_range.iloc[-(SQUEEZE_TR_LOOKBACK + 1):-1].mean()
+    if current_tr <= recent_avg_tr:
+        return False
+
+    if vol_ratio is None or vol_ratio < 1.0:
+        return False
+
+    return True
+
+
+def _confirmed(snapshot: dict[str, Any], spy_df: pd.DataFrame | None, setup_type: str) -> bool:
+    """Gate 3: confirmation criteria tailored to the setup type detected in Gate 2 —
+    a breakout, a pullback, and a squeeze are confirmed by different evidence."""
+    if setup_type == "breakout":
+        return _confirmed_breakout(snapshot, spy_df)
+    if setup_type == "pullback":
+        return _confirmed_pullback(snapshot, spy_df)
+    if setup_type == "squeeze":
+        return _confirmed_squeeze(snapshot, spy_df)
+    return False
 
 
 def _position_size(capital: float, entry: float, stop: float) -> int:
@@ -212,7 +295,7 @@ def evaluate_entry(
     gate_market = _market_regime_ok(regime)
     gate_trend = _trend_ok(snapshot)
     setup_type = _detect_setup(snapshot) if gate_trend else None
-    gate_confirmed = _confirmed(snapshot, spy_df) if setup_type else False
+    gate_confirmed = _confirmed(snapshot, spy_df, setup_type) if setup_type else False
 
     entry = snapshot.get("close") or 0.0
     atr = snapshot.get("atr_14") or 0.0
