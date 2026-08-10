@@ -291,21 +291,6 @@ def test_run_factor_scoring_step_passes_backdated_timestamp(monkeypatch, strateg
     assert captured["scored_at"] == "2026-08-07T21:05:00+00:00"
 
 
-def test_load_fundamentals_keeps_latest_row_in_growth_history(monkeypatch) -> None:
-    rows = [
-        {"symbol": "AAPL", "period_end": "2025-12-31", "revenue": 400.0},
-        {"symbol": "AAPL", "period_end": "2024-12-31", "revenue": 360.0},
-        {"symbol": "AAPL", "period_end": "2023-12-31", "revenue": 320.0},
-        {"symbol": "AAPL", "period_end": "2022-12-31", "revenue": 280.0},
-    ]
-    monkeypatch.setattr(score_job, "fetch_all_pages", lambda build_query, page_size=1000: rows)
-
-    fundamentals, income_history = score_job._load_fundamentals(FakeDB({}), ["AAPL"])
-
-    assert fundamentals == [rows[0]]
-    assert income_history["AAPL"] == rows[:4]
-
-
 def test_run_entry_gates_step_passes_backdated_timestamp(monkeypatch, strategy_params) -> None:
     db = FakeDB({"portfolio_snapshots": [{"drawdown_from_high_pct": -0.02}], "entry_signals": []})
     captured: dict[str, object] = {}

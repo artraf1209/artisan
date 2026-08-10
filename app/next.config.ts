@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
       { source: '/positions', destination: '/dashboard/positions', permanent: true },
       { source: '/account', destination: '/dashboard/account', permanent: true },
       { source: '/orders', destination: '/recommendations/orders', permanent: true },
+      { source: '/trades/queue', destination: '/recommendations', permanent: true },
     ]
   },
 }

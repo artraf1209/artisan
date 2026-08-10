@@ -12,7 +12,7 @@ export interface AlpacaAccountState {
  * Alpaca directly — per CLAUDE.md, no Next.js code may call the Alpaca API
  * server-side; only Supabase edge functions may (execute-trade for orders,
  * this one for read-only account state). Same auth pattern already used by
- * /api/queue/[id]/approve's invokeExecuteTrade(): service-role-authenticated
+ * /api/recommendations/[id]/approve's invokeExecuteTrade(): service-role-authenticated
  * fetch to /functions/v1/<name>.
  */
 export async function fetchAlpacaAccountState(): Promise<AlpacaAccountState> {

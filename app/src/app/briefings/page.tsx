@@ -27,7 +27,7 @@ export default async function BriefingsPage() {
       title="Briefings"
       subtitle="Read the structured daily digest written by the v2 briefing agent, including urgent flags, recommendation highlights, outcomes, and the full markdown summary."
       actions={[
-        { href: '/trades/queue', label: 'Approval Queue', icon: ClipboardCheck },
+        { href: '/recommendations', label: 'Approval Queue', icon: ClipboardCheck },
         { href: '/settings', label: 'Settings', icon: Settings },
       ]}
     >

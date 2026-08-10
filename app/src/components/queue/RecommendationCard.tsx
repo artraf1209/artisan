@@ -60,7 +60,7 @@ export default function RecommendationCard({
       setPreviewError(null)
 
       try {
-        const response = await fetch(`/api/queue/${recommendation.id}/preview-size`, {
+        const response = await fetch(`/api/recommendations/${recommendation.id}/preview-size`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -109,7 +109,7 @@ export default function RecommendationCard({
       setPreviewError(null)
 
       try {
-        const response = await fetch(`/api/queue/${recommendation.id}/preview-size`, {
+        const response = await fetch(`/api/recommendations/${recommendation.id}/preview-size`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -181,8 +181,8 @@ export default function RecommendationCard({
 
       const response = await fetch(
         decision === 'approve'
-          ? `/api/queue/${recommendation.id}/approve`
-          : `/api/queue/${recommendation.id}/reject`,
+          ? `/api/recommendations/${recommendation.id}/approve`
+          : `/api/recommendations/${recommendation.id}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

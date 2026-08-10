@@ -53,10 +53,7 @@ export async function GET(request: NextRequest) {
         )
         .eq('strategy_id', selectedStrategy.id)
         .eq('run_id', latestRegime.run_id)
-        .eq('hard_filter_pass', true)
-        .not('rank', 'is', null)
-        .order('rank', { ascending: true })
-        .limit(shortlistSize),
+        .order('composite_z', { ascending: false }),
       supabase
         .from('entry_signals')
         .select(
@@ -74,7 +71,9 @@ export async function GET(request: NextRequest) {
       throw new Error(entryResult.error.message)
     }
 
-    const shortlist = ((factorResult.data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+    const shortlist = ((factorResult.data ?? []) as Array<Record<string, unknown>>)
+      .slice(0, shortlistSize)
+      .map((row) => ({
         symbol: String(row.symbol),
         sector: (row.sector as string | null) ?? null,
         rank: typeof row.rank === 'number' ? row.rank : Number(row.rank ?? NaN),

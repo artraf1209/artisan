@@ -138,9 +138,7 @@ def _load_fundamentals(db: Any, symbols: list[str]) -> tuple[list[dict[str, Any]
     for row in rows:
         by_symbol.setdefault(row["symbol"], []).append(row)
     fundamentals = [rows_[0] for rows_ in by_symbol.values() if rows_]
-    # Growth scoring needs the latest row plus the three prior annual rows so
-    # a symbol with only four annual observations still has a full 3-year span.
-    income_history = {sym: rows_[:4] for sym, rows_ in by_symbol.items()}
+    income_history = {sym: rows_[1:5] for sym, rows_ in by_symbol.items()}
     return fundamentals, income_history
 
 

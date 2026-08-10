@@ -23,8 +23,8 @@ export default function PositionActionCard({
     startTransition(async () => {
       const response = await fetch(
         decision === 'approve'
-          ? `/api/queue/${review.id}/approve`
-          : `/api/queue/${review.id}/reject`,
+          ? `/api/recommendations/${review.id}/approve`
+          : `/api/recommendations/${review.id}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

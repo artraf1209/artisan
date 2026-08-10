@@ -53,7 +53,7 @@ export default async function SettingsPage() {
       subtitle="Edit the live v2 strategy thresholds that drive sizing, screening, timing, position management, and daily agent budget behavior."
       actions={[
         { href: '/recommendations/shortlist', label: 'Shortlist', icon: Target },
-        { href: '/trades/queue', label: 'Approval Queue', icon: ClipboardCheck },
+        { href: '/recommendations', label: 'Approval Queue', icon: ClipboardCheck },
       ]}
     >
       {strategyError ? (
