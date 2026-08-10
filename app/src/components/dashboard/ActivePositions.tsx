@@ -1,7 +1,7 @@
-import type { Position } from '@/types'
+import type { PositionOverview } from '@/lib/positions'
 import { formatCurrency } from '@/lib/utils'
 
-export default function ActivePositions({ positions }: { positions: Position[] }) {
+export default function ActivePositions({ positions }: { positions: PositionOverview[] }) {
   return (
     <div className="surface-panel col-span-1 xl:col-span-6">
       <div className="border-b border-border/70 px-5 py-4">

@@ -1,13 +1,16 @@
-import { createServerClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { createServerClient } from '@/lib/supabase/server'
+import { loadOpenPositions } from '@/lib/positions'
 
 export async function GET() {
-  const supabase = await createServerClient()
-  const { data, error } = await supabase
-    .from('positions')
-    .select('*')
-    .order('updated_at', { ascending: false })
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json(data)
+  try {
+    const supabase = await createServerClient()
+    const positions = await loadOpenPositions(supabase as any)
+    return NextResponse.json(positions)
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to load positions.' },
+      { status: 500 },
+    )
+  }
 }

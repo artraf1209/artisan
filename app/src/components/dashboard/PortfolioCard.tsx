@@ -1,8 +1,8 @@
-import type { Position } from '@/types'
+import type { PositionOverview } from '@/lib/positions'
 import { formatCurrency } from '@/lib/utils'
 import { TrendingUp, TrendingDown } from 'lucide-react'
 
-export default function PortfolioCard({ positions }: { positions: Position[] }) {
+export default function PortfolioCard({ positions }: { positions: PositionOverview[] }) {
   const totalUnrealized = positions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0)
   const isPositive = totalUnrealized >= 0
 
