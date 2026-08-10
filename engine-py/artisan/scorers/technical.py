@@ -24,11 +24,11 @@ class TechnicalScorer:
             self.db.table("price_bars")
             .select("symbol, bar_time, open, high, low, close, volume, vwap")
             .eq("symbol", symbol)
-            .order("bar_time", desc=False)
+            .order("bar_time", desc=True)
             .limit(limit)
             .execute()
         )
-        return response.data
+        return list(reversed(response.data))
 
     @staticmethod
     def compute_indicator_snapshot(price_rows: list[dict[str, Any]]) -> dict[str, float | None]:

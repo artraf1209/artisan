@@ -9,6 +9,8 @@ class FakePriceQuery:
     def __init__(self, rows: list[dict], upserts: list[dict]) -> None:
         self.rows = rows
         self.upserts = upserts
+        self.desc = False
+        self.limit_value: int | None = None
 
     def select(self, _fields: str):
         return self
@@ -17,13 +19,20 @@ class FakePriceQuery:
         return self
 
     def order(self, _column: str, desc: bool = False):
+        self.desc = desc
         return self
 
     def limit(self, _limit: int):
+        self.limit_value = _limit
         return self
 
     def execute(self):
-        return type("Response", (), {"data": self.rows})()
+        rows = self.rows
+        if rows and "bar_time" in rows[0]:
+            rows = sorted(rows, key=lambda row: row["bar_time"], reverse=self.desc)
+        if self.limit_value is not None:
+            rows = rows[: self.limit_value]
+        return type("Response", (), {"data": rows})()
 
     def upsert(self, row, on_conflict: str):
         self.upserts.append({"row": row, "on_conflict": on_conflict})
@@ -77,3 +86,12 @@ def test_technical_scorer_handles_short_history_gracefully() -> None:
 
     assert result["rsi_14"] is None
     assert result["t_score"] == 0.0 or result["t_score"] == 0.5
+
+
+def test_technical_scorer_uses_latest_history_window_for_close_snapshot() -> None:
+    rows = _price_rows(count=300)
+    scorer = TechnicalScorer(db=FakeDB(rows))
+
+    result = scorer.score_symbol("AAPL", computed_at="2026-05-04T13:30:00+00:00")
+
+    assert result["close"] == rows[-1]["close"]
