@@ -5,13 +5,13 @@ import logging
 from typing import Any
 
 from artisan.agents.base import (
-    AGENT_MODELS,
     GET_FUNDAMENTALS_DETAIL_TOOL,
     QUERY_DECISION_HISTORY_TOOL,
     SUBMIT_FUNDAMENTAL_ANALYSIS_TOOL,
     compute_cost_usd,
     get_anthropic_client,
     load_prompt,
+    model_for_agent,
     prompt_version,
     run_agent,
     validate_required_fields,
@@ -109,9 +109,9 @@ async def analyze(
     client = client or get_anthropic_client()
 
     context = _load_context(db, symbol, strategy_id)
-    system_prompt = load_prompt(AGENT_NAME)
+    system_prompt = load_prompt(AGENT_NAME, db=db)
     user_content = _build_user_content(symbol, context)
-    model = AGENT_MODELS[AGENT_NAME]
+    model = model_for_agent(AGENT_NAME, db=db)
 
     result = await asyncio.to_thread(
         run_agent,
@@ -133,7 +133,7 @@ async def analyze(
         symbol=symbol,
         agent_type=AGENT_TYPE,
         output=output,
-        prompt_version=prompt_version(AGENT_NAME),
+        prompt_version=prompt_version(AGENT_NAME, db=db),
         model=model,
         prompt_tokens=result["prompt_tokens"],
         output_tokens=result["output_tokens"],

@@ -6,8 +6,10 @@ import artisan.agents.base as base_module
 from artisan.agents.base import (
     QUERY_DECISION_HISTORY_TOOL,
     SUBMIT_TECHNICAL_ANALYSIS_TOOL,
+    clear_agent_config_cache,
     compute_cost_usd,
     load_prompt,
+    model_for_agent,
     prompt_version,
     run_agent,
 )
@@ -53,6 +55,38 @@ class FakeMessages:
 class FakeClient:
     def __init__(self, responses: list[FakeResponse]) -> None:
         self.messages = FakeMessages(responses)
+
+
+class FakeAgentConfigQuery:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.filters: dict[str, object] = {}
+
+    def select(self, _fields: str):
+        return self
+
+    def eq(self, column: str, value):
+        self.filters[column] = value
+        return self
+
+    def execute(self):
+        matched = [
+            row
+            for row in self.rows
+            if all(row.get(column) == value for column, value in self.filters.items())
+        ]
+        return type("Response", (), {"data": matched})()
+
+
+class FakeAgentConfigDB:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.calls = 0
+
+    def table(self, name: str):
+        assert name == "agent_configs"
+        self.calls += 1
+        return FakeAgentConfigQuery(self.rows)
 
 
 TECHNICAL_OUTPUT = {
@@ -153,6 +187,7 @@ def test_run_agent_raises_if_forced_tool_never_called() -> None:
 
 
 def test_prompt_version_stable_across_rereads_and_sensitive_to_content(tmp_path, monkeypatch) -> None:
+    clear_agent_config_cache()
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     (prompts_dir / "probe.md").write_text("version one")
@@ -165,6 +200,41 @@ def test_prompt_version_stable_across_rereads_and_sensitive_to_content(tmp_path,
     (prompts_dir / "probe.md").write_text("version two")
     v2 = base_module.prompt_version("probe")
     assert v2 != v1a
+
+
+def test_load_prompt_model_and_version_prefer_active_agent_configs() -> None:
+    clear_agent_config_cache()
+    db = FakeAgentConfigDB(
+        [
+            {
+                "agent_type": "briefing",
+                "model_id": "claude-sonnet-5",
+                "prompt_text": "<role>DB briefing prompt</role>",
+                "prompt_version": "v9",
+                "is_active": True,
+            }
+        ]
+    )
+
+    assert load_prompt("daily_briefing", db=db) == "<role>DB briefing prompt</role>"
+    assert model_for_agent("daily_briefing", db=db) == "claude-sonnet-5"
+    assert prompt_version("daily_briefing", db=db) == "v9"
+    assert db.calls == 1
+
+
+def test_load_prompt_falls_back_to_static_file_when_agent_config_missing(tmp_path, monkeypatch) -> None:
+    clear_agent_config_cache()
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "probe.md").write_text("fallback prompt")
+    monkeypatch.setattr(base_module, "PROMPTS_DIR", prompts_dir)
+    monkeypatch.setattr(base_module, "AGENT_MODELS", {**base_module.AGENT_MODELS, "probe": "claude-haiku-4-5-20251001"})
+
+    db = FakeAgentConfigDB([])
+
+    assert load_prompt("probe", db=db) == "fallback prompt"
+    assert model_for_agent("probe", db=db) == "claude-haiku-4-5-20251001"
+    assert prompt_version("probe", db=db) == base_module.hashlib.sha256(b"fallback prompt").hexdigest()
 
 
 @pytest.mark.parametrize(

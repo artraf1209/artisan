@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from artisan.agents.base import (
-    AGENT_MODELS,
     QUERY_DECISION_HISTORY_TOOL,
     SUBMIT_POSITION_REVIEWS_TOOL,
     compute_cost_usd,
     get_anthropic_client,
     load_prompt,
+    model_for_agent,
     prompt_version,
     run_agent,
     validate_required_fields,
@@ -350,9 +350,9 @@ async def review_positions(
         return {"reviews": [], "available_risk_budget": available_risk_budget}
 
     shared_context = _load_shared_context(db, run_id)
-    system_prompt = load_prompt(AGENT_NAME)
+    system_prompt = load_prompt(AGENT_NAME, db=db)
     user_content = build_user_content(positions, shared_context, strategy_params, now)
-    model = AGENT_MODELS[AGENT_NAME]
+    model = model_for_agent(AGENT_NAME, db=db)
     max_iterations = max(5, len(positions) + 3)
 
     result = await asyncio.to_thread(
@@ -405,7 +405,7 @@ async def review_positions(
         symbol=None,
         agent_type=AGENT_TYPE,
         output=output,
-        prompt_version=prompt_version(AGENT_NAME),
+        prompt_version=prompt_version(AGENT_NAME, db=db),
         model=model,
         prompt_tokens=result["prompt_tokens"],
         output_tokens=result["output_tokens"],

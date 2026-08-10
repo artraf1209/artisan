@@ -8,11 +8,11 @@ from typing import Any, Callable
 import httpx
 
 from artisan.agents.base import (
-    AGENT_MODELS,
     SUBMIT_BRIEFING_TOOL,
     compute_cost_usd,
     get_anthropic_client,
     load_prompt,
+    model_for_agent,
     prompt_version,
     run_agent,
     validate_required_fields,
@@ -215,9 +215,9 @@ async def write_briefing(
     sender = telegram_sender or _send_telegram_notification
 
     context = assemble_context(db, run_id=run_id, run_date=run_date, expired_counts=expired_counts)
-    system_prompt = load_prompt(AGENT_NAME)
+    system_prompt = load_prompt(AGENT_NAME, db=db)
     user_content = build_user_content(context, strategy_params)
-    model = AGENT_MODELS[AGENT_NAME]
+    model = model_for_agent(AGENT_NAME, db=db)
 
     # daily_briefing has no <tools> section in its prompt (verified in v2-09) --
     # it only ever calls the forced submit_briefing tool, no query_decision_history.
@@ -251,7 +251,7 @@ async def write_briefing(
         symbol=None,
         agent_type=AGENT_TYPE,
         output=output,
-        prompt_version=prompt_version(AGENT_NAME),
+        prompt_version=prompt_version(AGENT_NAME, db=db),
         model=model,
         prompt_tokens=result["prompt_tokens"],
         output_tokens=result["output_tokens"],

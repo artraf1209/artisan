@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from artisan.agents.tools import get_fundamentals_detail, query_decision_history
+from artisan.db.client import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,17 @@ AGENT_MODELS: dict[str, str] = {
     "position_review": MODEL_SONNET,
 }
 
+AGENT_CONFIG_TYPES: dict[str, str] = {
+    "fundamental_analyst": "fundamental_analyst",
+    "technical_analyst": "technical_analyst",
+    "sentiment_analyst": "sentiment_analyst",
+    "daily_briefing": "briefing",
+    "synthesis": "synthesis",
+    "position_review": "position_review",
+}
+
 _anthropic_client: Any = None
+_agent_config_cache: dict[int, dict[str, dict[str, str]]] = {}
 
 
 def get_anthropic_client() -> Any:
@@ -55,15 +66,92 @@ def validate_required_fields(output: dict[str, Any], required_fields: tuple[str,
         raise AgentOutputError(f"{agent_name} output missing required field(s): {', '.join(missing)}")
 
 
-def load_prompt(agent_name: str) -> str:
-    """Reads prompts/<agent_name>.md — copied verbatim from artisan-v2-agent-prompts.md."""
+def clear_agent_config_cache(db: Any | None = None) -> None:
+    if db is None:
+        _agent_config_cache.clear()
+        return
+
+    _agent_config_cache.pop(id(db), None)
+
+
+def _load_static_prompt(agent_name: str) -> str:
     return (PROMPTS_DIR / f"{agent_name}.md").read_text()
 
 
-def prompt_version(agent_name: str) -> str:
-    """sha256 hex digest of the prompt file contents, logged on every call
-    (agent_analyses.prompt_version) so prompt changes are traceable."""
-    return hashlib.sha256(load_prompt(agent_name).encode("utf-8")).hexdigest()
+def _agent_config_cache_key(db: Any | None) -> int:
+    return 0 if db is None else id(db)
+
+
+def _resolve_agent_config_type(agent_name: str) -> str:
+    return AGENT_CONFIG_TYPES.get(agent_name, agent_name)
+
+
+def _load_active_agent_configs(db: Any | None = None) -> dict[str, dict[str, str]]:
+    cache_key = _agent_config_cache_key(db)
+    cached = _agent_config_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        client = db or get_client()
+        rows = (
+            client.table("agent_configs")
+            .select("agent_type,model_id,prompt_text,prompt_version")
+            .eq("is_active", True)
+            .execute()
+            .data
+        )
+    except Exception:
+        logger.info("Falling back to static agent config for prompt/model resolution.", exc_info=True)
+        rows = []
+
+    configs = {
+        row["agent_type"]: {
+            "model_id": row["model_id"],
+            "prompt_text": row["prompt_text"],
+            "prompt_version": row["prompt_version"],
+        }
+        for row in rows or []
+        if row.get("agent_type") and row.get("model_id") and row.get("prompt_text") and row.get("prompt_version")
+    }
+    _agent_config_cache[cache_key] = configs
+    return configs
+
+
+def get_agent_config(agent_name: str, db: Any | None = None) -> dict[str, str]:
+    agent_type = _resolve_agent_config_type(agent_name)
+    active_config = _load_active_agent_configs(db).get(agent_type)
+    if active_config is not None:
+        return {
+            "model_id": active_config["model_id"],
+            "prompt_text": active_config["prompt_text"],
+            "prompt_version": active_config["prompt_version"],
+            "source": "database",
+        }
+
+    prompt_text = _load_static_prompt(agent_name)
+    return {
+        "model_id": AGENT_MODELS.get(agent_name, MODEL_HAIKU),
+        "prompt_text": prompt_text,
+        "prompt_version": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+        "source": "static",
+    }
+
+
+def model_for_agent(agent_name: str, db: Any | None = None) -> str:
+    return get_agent_config(agent_name, db).get("model_id", AGENT_MODELS.get(agent_name, MODEL_HAIKU))
+
+
+def load_prompt(agent_name: str, db: Any | None = None) -> str:
+    """Loads the active DB-backed prompt when present, otherwise falls back to
+    prompts/<agent_name>.md so local/dev runs keep working without Supabase."""
+    return get_agent_config(agent_name, db)["prompt_text"]
+
+
+def prompt_version(agent_name: str, db: Any | None = None) -> str:
+    """Stable prompt version logged on every call. DB-backed configs use the
+    saved prompt_version string; static fallback uses a sha256 content hash."""
+    return get_agent_config(agent_name, db)["prompt_version"]
 
 
 # ── Tool schemas ───────────────────────────────────────────────────────────

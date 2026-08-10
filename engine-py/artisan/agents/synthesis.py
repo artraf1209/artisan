@@ -5,12 +5,12 @@ import logging
 from typing import Any
 
 from artisan.agents.base import (
-    AGENT_MODELS,
     QUERY_DECISION_HISTORY_TOOL,
     SUBMIT_RECOMMENDATIONS_TOOL,
     compute_cost_usd,
     get_anthropic_client,
     load_prompt,
+    model_for_agent,
     prompt_version,
     run_agent,
     validate_required_fields,
@@ -382,9 +382,9 @@ async def synthesize(
         db, run_id=run_id, strategy_id=strategy_id, strategy_params=strategy_params,
         available_risk_budget=available_risk_budget,
     )
-    system_prompt = load_prompt(AGENT_NAME)
+    system_prompt = load_prompt(AGENT_NAME, db=db)
     user_content = build_user_content(context, strategy_params)
-    model = AGENT_MODELS[AGENT_NAME]
+    model = model_for_agent(AGENT_NAME, db=db)
 
     # Needs enough iterations for a query_decision_history call per ENTER candidate
     # plus the final forced submission.
@@ -432,7 +432,7 @@ async def synthesize(
         symbol=None,
         agent_type=AGENT_TYPE,
         output=output,
-        prompt_version=prompt_version(AGENT_NAME),
+        prompt_version=prompt_version(AGENT_NAME, db=db),
         model=model,
         prompt_tokens=result["prompt_tokens"],
         output_tokens=result["output_tokens"],
