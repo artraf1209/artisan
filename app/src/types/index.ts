@@ -303,6 +303,27 @@ export type Database = {
         Insert: Omit<Database['public']['Tables']['portfolio_positions']['Row'], 'id' | 'opened_at' | 'updated_at'>
         Update: Partial<Database['public']['Tables']['portfolio_positions']['Insert']>
       }
+      agent_configs: {
+        Row: {
+          id: string
+          agent_type:
+            | 'fundamental_analyst'
+            | 'technical_analyst'
+            | 'sentiment_analyst'
+            | 'synthesis'
+            | 'position_review'
+            | 'briefing'
+          model_id: string
+          prompt_text: string
+          prompt_version: string
+          is_active: boolean
+          created_at: string
+          updated_at: string
+          updated_by: string
+        }
+        Insert: Omit<Database['public']['Tables']['agent_configs']['Row'], 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<Database['public']['Tables']['agent_configs']['Insert']>
+      }
       llm_analyses: {
         Row: {
           id: string
@@ -345,4 +366,5 @@ export type SignalEvent = Database['public']['Tables']['signal_events']['Row']
 export type TradeIntent = Database['public']['Tables']['trade_intents']['Row']
 export type TradeExecution = Database['public']['Tables']['trade_executions']['Row']
 export type PortfolioPosition = Database['public']['Tables']['portfolio_positions']['Row']
+export type AgentConfig = Database['public']['Tables']['agent_configs']['Row']
 export type LlmAnalysis = Database['public']['Tables']['llm_analyses']['Row']
