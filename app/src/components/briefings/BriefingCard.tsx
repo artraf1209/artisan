@@ -35,6 +35,9 @@ function formatModel(value: string | null) {
   return value ?? 'Unknown model'
 }
 
+// Points into the Synthesis tab rather than /history — v3-11 wires that
+// tab to read the ?symbol= filter; until then it's an honest stub, not a
+// dead link, since the destination already exists (as a ComingSoon page).
 function InlineSymbolLinks({ text }: { text: string }) {
   const parts: Array<{ type: 'text' | 'symbol'; value: string }> = []
   let cursor = 0
@@ -68,7 +71,7 @@ function InlineSymbolLinks({ text }: { text: string }) {
         part.type === 'symbol' ? (
           <Link
             key={`${part.value}-${index}`}
-            href={`/history?symbol=${encodeURIComponent(part.value)}`}
+            href={`/briefing/synthesis?symbol=${encodeURIComponent(part.value)}`}
             className="font-medium text-foreground underline decoration-border underline-offset-4 transition hover:text-primary"
           >
             {part.value}

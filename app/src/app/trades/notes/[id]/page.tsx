@@ -32,7 +32,7 @@ export default async function TradeNotePage({ params }: { params: Promise<{ id: 
       subtitle="A concise signal rationale, supporting evidence, and invalidation path for one candidate trade."
       actions={[
         { href: '/recommendations', label: 'Approval Queue', icon: ClipboardCheck },
-        { href: '/briefings', label: 'Briefings', icon: Newspaper },
+        { href: '/briefing', label: 'Briefings', icon: Newspaper },
       ]}
     >
         {error || !signal ? (

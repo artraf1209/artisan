@@ -60,7 +60,7 @@ export default async function HistoryPage({
       subtitle="Browse the same decision-outcome archive the agents query before making new calls, with live aggregate stats over the filtered set."
       actions={[
         { href: '/recommendations/orders', label: 'Orders', icon: TrendingUp },
-        { href: '/briefings', label: 'Briefings', icon: Newspaper },
+        { href: '/briefing', label: 'Briefings', icon: Newspaper },
       ]}
     >
       <section className="grid gap-3 lg:grid-cols-5">
