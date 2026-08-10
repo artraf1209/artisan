@@ -108,6 +108,45 @@ def test_pipeline_job_marks_failed_and_reraises_on_exception() -> None:
     assert db.table_rows["pipeline_runs"][0]["completed_at"] is not None
 
 
+def test_maybe_mark_paused_run_updates_pipeline_row_and_writes_audit_log() -> None:
+    db = FakeDB(
+        {
+            "pipeline_runs": [{"id": "run-1", "started_at": "2026-06-01T00:00:00+00:00", "status": "ingested"}],
+            "strategies": [{"id": "strategy-1", "paused_until": "2026-06-05T00:00:00+00:00"}],
+        }
+    )
+
+    paused_until = score_job.maybe_mark_paused_run(
+        db,
+        run_id="run-1",
+        strategy_id="strategy-1",
+        now=score_job.datetime(2026, 6, 1, tzinfo=score_job.UTC),
+    )
+
+    assert paused_until == "2026-06-05T00:00:00+00:00"
+    assert db.table_rows["pipeline_runs"][0]["status"] == "paused"
+    assert db.table_rows["pipeline_runs"][0]["completed_at"] is not None
+    assert db.inserts["audit_log"][0]["action"] == "score_paused"
+    assert db.inserts["audit_log"][0]["payload"]["paused_until"] == "2026-06-05T00:00:00+00:00"
+
+
+def test_run_score_returns_early_when_strategy_is_paused(monkeypatch) -> None:
+    db = FakeDB(
+        {
+            "pipeline_runs": [{"id": "run-1", "started_at": "2026-06-01T00:00:00+00:00", "status": "ingested"}],
+            "strategies": [{"id": "strategy-1", "paused_until": "2026-12-05T00:00:00+00:00"}],
+        }
+    )
+
+    monkeypatch.setattr(score_job, "get_strategy_params", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not load strategy params when paused")))
+
+    result = score_job.run_score(db=db, run_id="run-1", strategy_id="strategy-1")
+
+    assert result["paused"] is True
+    assert result["factor_scores"] == 0
+    assert result["entry_signals"] == 0
+
+
 def test_run_entry_gates_step_only_evaluates_top_shortlist_size_by_rank(monkeypatch, strategy_params) -> None:
     from dataclasses import replace
 

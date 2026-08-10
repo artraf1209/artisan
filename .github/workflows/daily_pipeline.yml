@@ -25,6 +25,8 @@ jobs:
     name: Regime + factor scoring + entry gates
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      pipeline_status: ${{ steps.pipeline_status.outputs.pipeline_status }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,10 +40,17 @@ jobs:
       - name: Run score
         working-directory: engine-py
         run: uv run python -m artisan.jobs.score
+      - name: Read pipeline status
+        id: pipeline_status
+        working-directory: engine-py
+        run: |
+          status=$(uv run python -c "from artisan.db.client import get_client; from artisan.jobs.common import resolve_current_run_id; db = get_client(); run_id = resolve_current_run_id(db); rows = db.table('pipeline_runs').select('status').eq('id', run_id).limit(1).execute().data; print(rows[0]['status'] if rows else 'unknown')")
+          echo "pipeline_status=$status" >> "$GITHUB_OUTPUT"
 
   track_outcomes:
     name: Track decision outcomes
     needs: score
+    if: needs.score.outputs.pipeline_status != 'paused'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +68,10 @@ jobs:
 
   expire_stale:
     name: Expire stale queue items
-    needs: track_outcomes
+    needs:
+      - score
+      - track_outcomes
+    if: needs.score.outputs.pipeline_status != 'paused'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +89,10 @@ jobs:
 
   review_positions:
     name: Position Review agent
-    needs: expire_stale
+    needs:
+      - score
+      - expire_stale
+    if: needs.score.outputs.pipeline_status != 'paused'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +110,10 @@ jobs:
 
   synthesize:
     name: Analyst agents + Synthesis agent
-    needs: review_positions
+    needs:
+      - score
+      - review_positions
+    if: needs.score.outputs.pipeline_status != 'paused'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,7 +131,10 @@ jobs:
 
   briefing:
     name: Daily Briefing agent + Telegram push
-    needs: synthesize
+    needs:
+      - score
+      - synthesize
+    if: needs.score.outputs.pipeline_status != 'paused'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

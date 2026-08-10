@@ -164,7 +164,6 @@ def _send_telegram_notification(output: dict[str, Any]) -> None:
     """Pushes a condensed summary via the existing send-alert edge function
     (kept as-is). full_text is deliberately never sent verbatim -- the push is
     a summary that links back to /briefings (v2-23)."""
-    message = _format_telegram_message(output)
     url = f"{settings.supabase_url}/functions/v1/send-alert"
     headers = {
         "Authorization": f"Bearer {settings.supabase_service_role_key}",
@@ -172,7 +171,21 @@ def _send_telegram_notification(output: dict[str, Any]) -> None:
         "Content-Type": "application/json",
     }
     try:
-        response = httpx.post(url, headers=headers, json={"message": message, "trigger": "daily_briefing"}, timeout=15.0)
+        response = httpx.post(
+            url,
+            headers=headers,
+            json={
+                "trigger": "daily_briefing",
+                "message": _format_telegram_message(output),
+                "briefing": {
+                    "urgent_flags": output.get("urgent_flags") or [],
+                    "regime_line": output.get("regime_line"),
+                    "new_recommendations_summary": output.get("new_recommendations_summary"),
+                    "portfolio_state_line": output.get("portfolio_state_line"),
+                },
+            },
+            timeout=15.0,
+        )
         response.raise_for_status()
     except Exception:
         # A failed push shouldn't fail the whole pipeline run -- the briefings

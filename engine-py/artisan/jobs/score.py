@@ -21,6 +21,59 @@ logger = logging.getLogger(__name__)
 REGIME_LOOKBACK_DAYS = 400  # >252 trading days with a buffer for weekends/holidays
 
 
+def _parse_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def maybe_mark_paused_run(
+    db: Any,
+    *,
+    run_id: str,
+    strategy_id: str,
+    now: datetime | None = None,
+) -> str | None:
+    now = now or datetime.now(UTC)
+    rows = (
+        db.table("strategies")
+        .select("paused_until")
+        .eq("id", strategy_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    paused_until = _parse_timestamp(rows[0].get("paused_until")) if rows else None
+    if paused_until is None or paused_until <= now:
+        return None
+
+    db.table("pipeline_runs").update(
+        {"status": "paused", "completed_at": now.isoformat()}
+    ).eq("id", run_id).execute()
+    db.table("audit_log").insert(
+        {
+            "actor": "github-actions",
+            "action": "score_paused",
+            "entity": "pipeline_runs",
+            "entity_id": run_id,
+            "payload": {
+                "run_id": run_id,
+                "strategy_id": strategy_id,
+                "paused_until": paused_until.isoformat(),
+            },
+        }
+    ).execute()
+    logger.info("score: strategy paused until %s, skipping run_id=%s", paused_until.isoformat(), run_id)
+    return paused_until.isoformat()
+
+
 def _load_spy_bars(db: Any) -> pd.DataFrame:
     since = (datetime.now(UTC).date() - timedelta(days=REGIME_LOOKBACK_DAYS)).isoformat()
     rows = fetch_all_pages(
@@ -193,6 +246,10 @@ def run_entry_gates_step(
 
 
 def run_score(*, db: Any, run_id: str, strategy_id: str) -> dict[str, Any]:
+    paused_until = maybe_mark_paused_run(db, run_id=run_id, strategy_id=strategy_id)
+    if paused_until is not None:
+        return {"paused": True, "paused_until": paused_until, "factor_scores": 0, "entry_signals": 0}
+
     strategy_params = get_strategy_params(strategy_id, db=db)
 
     regime = run_regime_step(db, run_id)
