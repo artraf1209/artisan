@@ -2,7 +2,10 @@ import Link from 'next/link'
 import { createServerClient } from '@/lib/supabase/server'
 import { fetchAlpacaAccountState, type AlpacaAccountState } from '@/lib/alpaca'
 import { loadOpenPositions } from '@/lib/positions'
-import { computeSectorExposure, formatPauseStatus } from '@/lib/dashboard-overview'
+import { loadDecisionHistory } from '@/lib/decision-history'
+import { computeSectorExposure, computeYtdGoalSeries, formatPauseStatus } from '@/lib/dashboard-overview'
+import YtdGoalChart from '@/components/dashboard/YtdGoalChart'
+import PositionTimeframeChart, { type PositionBarPoint } from '@/components/dashboard/PositionTimeframeChart'
 import { formatCurrency, formatPercent } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
@@ -15,6 +18,8 @@ type StrategyConfigRow = {
   } | null
   performance_goals?: {
     max_drawdown_tolerance_pct?: number
+    target_annual_return_pct?: number
+    benchmark_symbol?: string
   } | null
 }
 
@@ -92,6 +97,63 @@ export default async function DashboardOverviewPage() {
 
   const totalUnrealizedPnl = positions.reduce((sum, position) => sum + (position.unrealized_pnl ?? 0), 0)
   const needsAttentionCount = positions.filter((position) => position.needs_attention).length
+
+  const benchmarkSymbol = strategyConfig?.performance_goals?.benchmark_symbol ?? 'SPY'
+  const targetAnnualReturnPct = Number(strategyConfig?.performance_goals?.target_annual_return_pct ?? 0.25)
+  const yearStart = `${new Date().getUTCFullYear()}-01-01`
+
+  const positionSymbols = [...new Set(positions.map((position) => position.symbol))]
+  const oneYearAgo = new Date()
+  oneYearAgo.setUTCDate(oneYearAgo.getUTCDate() - 370)
+
+  const [{ data: ytdSnapshotsData }, decisionHistoryResult, { data: positionBarsData }] = await Promise.all([
+    supabase
+      .from('portfolio_snapshots')
+      .select('snapshot_date, equity')
+      .gte('snapshot_date', yearStart)
+      .order('snapshot_date', { ascending: true }),
+    loadDecisionHistory(supabase, { mode: 'real', limit: 1000 }),
+    positionSymbols.length > 0
+      ? supabase
+          .from('price_bars')
+          .select('symbol, bar_time, close')
+          .in('symbol', positionSymbols)
+          .gte('bar_time', oneYearAgo.toISOString())
+          .order('bar_time', { ascending: true })
+      : { data: [] },
+  ])
+
+  const ytdSnapshots = (ytdSnapshotsData ?? []) as Array<{ snapshot_date: string; equity: number | string | null }>
+  const firstYtdDate = ytdSnapshots[0]?.snapshot_date
+  const lastYtdDate = ytdSnapshots[ytdSnapshots.length - 1]?.snapshot_date
+
+  const { data: benchmarkBarsData } =
+    firstYtdDate && lastYtdDate
+      ? await supabase
+          .from('price_bars')
+          .select('bar_time, close')
+          .eq('symbol', benchmarkSymbol)
+          .gte('bar_time', firstYtdDate)
+          .lte('bar_time', `${lastYtdDate}T23:59:59Z`)
+          .order('bar_time', { ascending: true })
+      : { data: [] }
+
+  const ytdGoalSeries = computeYtdGoalSeries(
+    ytdSnapshots.map((row) => ({ snapshot_date: row.snapshot_date, equity: toNumber(row.equity) })),
+    ((benchmarkBarsData ?? []) as Array<{ bar_time: string; close: number | string | null }>).map((row) => ({
+      bar_time: row.bar_time,
+      close: toNumber(row.close),
+    })),
+    targetAnnualReturnPct,
+  )
+
+  const positionBars: PositionBarPoint[] = (
+    (positionBarsData ?? []) as Array<{ symbol: string; bar_time: string; close: number | string | null }>
+  )
+    .map((row) => ({ symbol: row.symbol, date: row.bar_time.slice(0, 10), close: toNumber(row.close) }))
+    .filter((row): row is PositionBarPoint => row.close != null)
+
+  const realizedStats = decisionHistoryResult.aggregate
 
   return (
     <>
@@ -203,6 +265,32 @@ export default async function DashboardOverviewPage() {
           </div>
         )}
       </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
+        <YtdGoalChart data={ytdGoalSeries} benchmarkLabel={benchmarkSymbol} targetAnnualReturnPct={targetAnnualReturnPct} />
+
+        <article className="rounded-[1.5rem] border border-border bg-card/95 p-5 shadow-[0_20px_45px_rgba(0,0,0,0.22)]">
+          <h2 className="text-lg font-semibold tracking-[-0.03em] text-foreground">Realized win rate</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Resolved outcomes from real (non-shadow) trades.</p>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <Metric label="Resolved" value={String(realizedStats.real_count)} />
+            <Metric
+              label="Win rate"
+              value={realizedStats.win_rate == null ? 'N/A' : `${(realizedStats.win_rate * 100).toFixed(1)}%`}
+            />
+            <Metric
+              label="Average R"
+              value={realizedStats.avg_r_multiple == null ? 'N/A' : `${realizedStats.avg_r_multiple.toFixed(2)}R`}
+            />
+            <Metric
+              label="Average days"
+              value={realizedStats.avg_days_to_resolution == null ? 'N/A' : `${realizedStats.avg_days_to_resolution.toFixed(1)}d`}
+            />
+          </div>
+        </article>
+      </section>
+
+      <PositionTimeframeChart symbols={positionSymbols} bars={positionBars} />
     </>
   )
 }
