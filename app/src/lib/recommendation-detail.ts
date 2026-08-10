@@ -110,6 +110,17 @@ export interface SynthesisRecommendationEntry {
   historical_precedent: string
 }
 
+export interface DecisionOutcomeDetail {
+  mode: string | null
+  resolution: string | null
+  resolved_at: string | null
+  days_to_resolution: number | null
+  r_multiple: number | null
+  entry_price_reference: number | null
+  stop_price: number | null
+  target_price: number | null
+}
+
 export interface RecommendationDetail {
   recommendation: RecommendationDetailRow
   entrySignal: EntrySignalDetail | null
@@ -120,6 +131,7 @@ export interface RecommendationDetail {
   sentiment: AnalystAnalysis<SentimentOutput> | null
   synthesis: SynthesisRecommendationEntry | null
   currentRiskParams: RiskParams | null
+  decisionOutcome: DecisionOutcomeDetail | null
 }
 
 const AGENT_ANALYSES_COLUMNS = 'agent_type, symbol, output, prompt_version, model, created_at'
@@ -163,6 +175,7 @@ export async function loadRecommendationDetail(
     analystRowsResult,
     synthesisRowResult,
     strategyResult,
+    decisionOutcomeResult,
   ] = await Promise.all([
     runId && strategyId
       ? supabase
@@ -214,10 +227,21 @@ export async function loadRecommendationDetail(
     strategyId
       ? supabase.from('strategies').select('risk_params').eq('id', strategyId).maybeSingle()
       : { data: null, error: null },
+    supabase
+      .from('decision_outcomes')
+      .select(
+        'mode, resolution, resolved_at, days_to_resolution, r_multiple, entry_price_reference, stop_price, target_price',
+      )
+      .eq('source_type', 'recommendation')
+      .eq('source_id', recommendationId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ])
 
   if (entrySignalResult.error) throw new Error(entrySignalResult.error.message)
   if (factorScoreResult.error) throw new Error(factorScoreResult.error.message)
+  if (decisionOutcomeResult.error) throw new Error(decisionOutcomeResult.error.message)
   if (analystRowsResult.error) throw new Error(analystRowsResult.error.message)
   if (synthesisRowResult.error) throw new Error(synthesisRowResult.error.message)
   if (strategyResult.error) throw new Error(strategyResult.error.message)
@@ -302,6 +326,20 @@ export async function loadRecommendationDetail(
 
   const strategyData = strategyResult.data as { risk_params?: RiskParams } | null
 
+  const decisionOutcomeData = decisionOutcomeResult.data as Record<string, unknown> | null
+  const decisionOutcome: DecisionOutcomeDetail | null = decisionOutcomeData
+    ? {
+        mode: (decisionOutcomeData.mode as string | null) ?? null,
+        resolution: (decisionOutcomeData.resolution as string | null) ?? null,
+        resolved_at: (decisionOutcomeData.resolved_at as string | null) ?? null,
+        days_to_resolution: toNumber(decisionOutcomeData.days_to_resolution),
+        r_multiple: toNumber(decisionOutcomeData.r_multiple),
+        entry_price_reference: toNumber(decisionOutcomeData.entry_price_reference),
+        stop_price: toNumber(decisionOutcomeData.stop_price),
+        target_price: toNumber(decisionOutcomeData.target_price),
+      }
+    : null
+
   return {
     recommendation,
     entrySignal,
@@ -312,6 +350,7 @@ export async function loadRecommendationDetail(
     sentiment: findAnalyst<SentimentOutput>('sentiment'),
     synthesis,
     currentRiskParams: strategyData?.risk_params ?? null,
+    decisionOutcome,
   }
 }
 

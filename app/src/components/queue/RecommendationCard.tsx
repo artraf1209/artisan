@@ -1,26 +1,11 @@
 'use client'
 
-import { useEffect, useState, useTransition, type HTMLAttributes } from 'react'
+import { useState, type HTMLAttributes } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { RecommendationQueueItem, SizePreview } from '@/lib/queue'
+import { useOrderApproval } from '@/lib/hooks/useOrderApproval'
 import StatusBadge from '@/components/shared/StatusBadge'
-
-type PreviewPayload = {
-  shares?: string
-  stop_price?: string
-  target_price?: string
-}
-
-type ApprovePayload = {
-  queue_type: 'recommendation'
-  note?: string
-  overrides?: {
-    shares?: number
-    stop_price?: number
-    target_price?: number
-  }
-}
 
 export default function RecommendationCard({
   recommendation,
@@ -29,13 +14,9 @@ export default function RecommendationCard({
 }) {
   const router = useRouter()
   const pathname = usePathname()
-  const [note, setNote] = useState('')
-  const [shares, setShares] = useState(recommendation.shares?.toString() ?? '')
-  const [stopPrice, setStopPrice] = useState(recommendation.stop_price?.toString() ?? '')
-  const [targetPrice, setTargetPrice] = useState(recommendation.target_price?.toString() ?? '')
-  const [showEditor, setShowEditor] = useState(false)
   const [showPrecedent, setShowPrecedent] = useState(false)
-  const [preview, setPreview] = useState<SizePreview | null>(
+
+  const initialPreview: SizePreview | null =
     recommendation.shares != null && recommendation.entry_price != null && recommendation.stop_price != null
       ? {
           shares: recommendation.shares,
@@ -46,160 +27,35 @@ export default function RecommendationCard({
           target_price: recommendation.target_price,
           allowed: true,
         }
-      : null,
-  )
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [isPending, startTransition] = useTransition()
+      : null
 
-  useEffect(() => {
-    let cancelled = false
+  const {
+    note,
+    setNote,
+    shares,
+    setShares,
+    stopPrice,
+    setStopPrice,
+    targetPrice,
+    setTargetPrice,
+    showEditor,
+    setShowEditor,
+    preview,
+    previewError,
+    previewLoading,
+    decisionState,
+    submitDecision,
+  } = useOrderApproval({
+    recommendationId: recommendation.id,
+    initialShares: recommendation.shares,
+    initialStopPrice: recommendation.stop_price,
+    initialTargetPrice: recommendation.target_price,
+    initialPreview,
+    onDecided: () => router.refresh(),
+  })
 
-    const loadPreview = async (payload: PreviewPayload = {}) => {
-      setPreviewLoading(true)
-      setPreviewError(null)
-
-      try {
-        const response = await fetch(`/api/recommendations/${recommendation.id}/preview-size`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
-        const body = (await response.json().catch(() => null)) as
-          | ({ error?: string } & Partial<SizePreview>)
-          | null
-
-        if (!response.ok) {
-          throw new Error(body?.error ?? 'Unable to preview size.')
-        }
-
-        if (!cancelled) {
-          setPreview(body as SizePreview)
-        }
-      } catch (previewRequestError) {
-        if (!cancelled) {
-          setPreviewError(
-            previewRequestError instanceof Error
-              ? previewRequestError.message
-              : 'Unable to preview size.',
-          )
-        }
-      } finally {
-        if (!cancelled) {
-          setPreviewLoading(false)
-        }
-      }
-    }
-
-    void loadPreview()
-
-    return () => {
-      cancelled = true
-    }
-  }, [recommendation.id])
-
-  useEffect(() => {
-    if (!showEditor) {
-      return
-    }
-
-    let cancelled = false
-    const timeout = window.setTimeout(async () => {
-      setPreviewLoading(true)
-      setPreviewError(null)
-
-      try {
-        const response = await fetch(`/api/recommendations/${recommendation.id}/preview-size`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shares,
-            stop_price: stopPrice,
-            target_price: targetPrice,
-          }),
-        })
-        const body = (await response.json().catch(() => null)) as
-          | ({ error?: string } & Partial<SizePreview>)
-          | null
-
-        if (!response.ok) {
-          throw new Error(body?.error ?? 'Unable to preview size.')
-        }
-
-        if (!cancelled) {
-          setPreview(body as SizePreview)
-        }
-      } catch (previewRequestError) {
-        if (!cancelled) {
-          setPreviewError(
-            previewRequestError instanceof Error
-              ? previewRequestError.message
-              : 'Unable to preview size.',
-          )
-        }
-      } finally {
-        if (!cancelled) {
-          setPreviewLoading(false)
-        }
-      }
-    }, 250)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timeout)
-    }
-  }, [recommendation.id, shares, showEditor, stopPrice, targetPrice])
-
-  const submitDecision = (decision: 'approve' | 'reject') => {
-    setError(null)
-
-    if (decision === 'approve' && showEditor) {
-      if (!preview) {
-        setError('Preview sizing before submitting edits.')
-        return
-      }
-
-      if (!preview.allowed) {
-        setError('Edited values exceed the allowed risk size.')
-        return
-      }
-    }
-
-    startTransition(async () => {
-      const payload: ApprovePayload = {
-        queue_type: 'recommendation',
-        note: note.trim() || undefined,
-      }
-
-      if (decision === 'approve' && showEditor) {
-        payload.overrides = {
-          shares: shares ? Number(shares) : undefined,
-          stop_price: stopPrice ? Number(stopPrice) : undefined,
-          target_price: targetPrice ? Number(targetPrice) : undefined,
-        }
-      }
-
-      const response = await fetch(
-        decision === 'approve'
-          ? `/api/recommendations/${recommendation.id}/approve`
-          : `/api/recommendations/${recommendation.id}/reject`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-      )
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null
-        setError(body?.error ?? `Failed to ${decision} recommendation.`)
-        return
-      }
-
-      router.refresh()
-    })
-  }
+  const isPending = decisionState.kind === 'submitting'
+  const error = decisionState.kind === 'error' ? decisionState.message : null
 
   const displayShares = preview?.shares ?? recommendation.shares ?? 0
   const displayDollarRisk = preview?.dollar_risk ?? recommendation.dollar_risk ?? 0

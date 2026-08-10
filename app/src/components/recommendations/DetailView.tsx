@@ -5,9 +5,11 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import ExecutiveSummary from '@/components/recommendations/ExecutiveSummary'
+import OrderEditor from '@/components/recommendations/OrderEditor'
 import ComputationTrace from '@/components/recommendations/ComputationTrace'
 import AgentReasoningCard from '@/components/recommendations/AgentReasoningCard'
 import SynthesisCard from '@/components/recommendations/SynthesisCard'
+import OutcomePanel from '@/components/recommendations/OutcomePanel'
 import {
   bucketFundamental,
   bucketSentiment,
@@ -88,6 +90,7 @@ export default function DetailView() {
           ) : detail ? (
             <>
               <ExecutiveSummary detail={detail} />
+              <OrderEditor detail={detail} onDecided={() => router.refresh()} />
               <ComputationTrace detail={detail} />
 
               <AgentReasoningCard
@@ -141,6 +144,7 @@ export default function DetailView() {
               />
 
               <SynthesisCard detail={detail} />
+              <OutcomePanel detail={detail} />
             </>
           ) : null}
         </div>
