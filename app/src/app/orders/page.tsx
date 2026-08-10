@@ -52,7 +52,7 @@ export default async function OrdersPage({
       subtitle="Review filled and submitted v2 orders, compare original sizing against approval edits, and track how each decision eventually resolved."
       actions={[
         { href: '/trades/queue', label: 'Queue', icon: ClipboardCheck },
-        { href: '/account', label: 'Account', icon: Wallet },
+        { href: '/dashboard/account', label: 'Account', icon: Wallet },
       ]}
     >
       <section className="grid gap-3 lg:grid-cols-3">
