@@ -110,6 +110,16 @@ export interface SynthesisRecommendationEntry {
   historical_precedent: string
 }
 
+export interface PositionReviewEntry {
+  position_id: string
+  symbol: string
+  recommended_action: 'hold' | 'trim' | 'add' | 'close' | 'tighten_stop' | 'widen_target'
+  reasoning: string
+  suggested_new_stop: number | null
+  suggested_new_target: number | null
+  historical_precedent: string
+}
+
 export interface DecisionOutcomeDetail {
   mode: string | null
   resolution: string | null
