@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 
 const nav = [
   { href: '/dashboard', label: 'Home', icon: BarChart3 },
-  { href: '/trades', label: 'Trades', icon: TrendingUp },
+  { href: '/orders', label: 'Orders', icon: TrendingUp },
   { href: '/trades/queue', label: 'Queue', icon: ClipboardCheck },
   { href: '/signals', label: 'Signals', icon: Zap },
   { href: '/briefings', label: 'Briefings', icon: Newspaper },

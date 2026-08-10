@@ -5,11 +5,13 @@ type Status = 'pending' | 'filled' | 'cancelled' | 'rejected' | 'long' | 'short'
 const statusStyles: Record<string, string> = {
   filled: 'bg-profit/14 text-profit border-profit/20',
   long: 'bg-profit/14 text-profit border-profit/20',
+  buy: 'bg-profit/14 text-profit border-profit/20',
   approved: 'bg-profit/14 text-profit border-profit/20',
   'in queue': 'bg-white/10 text-white border-white/10',
   pending: 'bg-white/10 text-white border-white/10',
   submitted: 'bg-white/10 text-white border-white/10',
   short: 'bg-loss/14 text-loss border-loss/20',
+  sell: 'bg-loss/14 text-loss border-loss/20',
   rejected: 'bg-loss/14 text-loss border-loss/20',
   cancelled: 'bg-muted text-muted-foreground border-border',
   flat: 'bg-muted text-muted-foreground border-border',
