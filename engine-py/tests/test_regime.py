@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from artisan.scoring.regime import classify_regime
+from artisan.scoring.regime import classify_regime, enter_eligible_rank_cutoff
 
 
 def _make_bars(closes: np.ndarray) -> pd.DataFrame:
@@ -118,3 +118,11 @@ def test_classify_regime_sorts_unsorted_input() -> None:
     bars = _risk_on_bars()
     shuffled = bars.sample(frac=1.0, random_state=42).reset_index(drop=True)
     assert classify_regime(shuffled) == classify_regime(bars)
+
+
+def test_enter_eligible_rank_cutoff_uses_half_up_rounding_for_neutral() -> None:
+    assert enter_eligible_rank_cutoff("neutral", 50) == 3
+
+
+def test_enter_eligible_rank_cutoff_uses_half_up_rounding_for_risk_on() -> None:
+    assert enter_eligible_rank_cutoff("risk_on", 25) == 3

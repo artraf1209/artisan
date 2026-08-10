@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import numpy as np
@@ -27,16 +28,22 @@ RISK_OFF_DRAWDOWN_MIN_PCT = 0.10  # "more than 10% below the trailing 252d high"
 RISK_OFF_ENTER_ELIGIBLE_COUNT = 3
 
 
+def _round_half_up(value: float) -> int:
+    """Match the frontend's 2.5 -> 3 behavior instead of Python's bankers'
+    rounding (where round(2.5) == 2). Inputs here are non-negative."""
+    return math.floor(value + 0.5)
+
+
 def enter_eligible_rank_cutoff(regime: str, shortlist_size: int) -> int:
     """The maximum factor_scores.rank still ENTER-eligible for this regime:
     top decile in risk_on, top 5% in neutral, a fixed top 2-3 names in risk_off
     (clean setups only, enforced by the actionable/veto checks around this)."""
     if regime == "risk_on":
-        return max(1, round(shortlist_size * 0.10))
+        return max(1, _round_half_up(shortlist_size * 0.10))
     if regime == "risk_off":
         return RISK_OFF_ENTER_ELIGIBLE_COUNT
     # neutral, and any unrecognized regime value: the more conservative default
-    return max(1, round(shortlist_size * 0.05))
+    return max(1, _round_half_up(shortlist_size * 0.05))
 
 
 def classify_regime(spy_bars: pd.DataFrame) -> dict[str, Any]:
