@@ -37,6 +37,49 @@ _FACTOR_SCORE_COLUMNS = "symbol,sector,composite_z,rank,hard_filter_pass"
 _ENTRY_SIGNAL_COLUMNS = "symbol,setup_type,actionable,entry_price,stop_price,target_price,atr,effective_horizon_days"
 
 
+def _coerce_synthesis_output(output: Any) -> dict[str, Any]:
+    if isinstance(output, dict):
+        return dict(output)
+    if isinstance(output, list):
+        logger.warning("Synthesis returned a bare array; coercing into {recommendations: [...]}.")
+        return {"recommendations": output}
+    logger.warning("Synthesis returned non-object output of type %s; coercing to empty payload.", type(output).__name__)
+    return {}
+
+
+def _default_run_summary(
+    *,
+    regime: str,
+    enter_eligible_count: int,
+    watch_eligible_count: int,
+    recommendation_count: int,
+    enter_count: int,
+    watch_count: int,
+) -> str:
+    return (
+        f"Reviewed {enter_eligible_count} enter-eligible and {watch_eligible_count} watch-eligible candidates "
+        f"in a {regime} regime. Final output: {recommendation_count} recommendation(s) "
+        f"({enter_count} enter, {watch_count} watch)."
+    )
+
+
+def _default_no_recommendation_reason(context: dict[str, Any]) -> str:
+    enter_symbols = [candidate["symbol"] for candidate in context["enter_eligible"]]
+    watch_symbols = [candidate["symbol"] for candidate in context["watch_eligible"]]
+    if enter_symbols:
+        return (
+            "No recommendations were persisted, and the model did not provide a structured no-trade rationale. "
+            f"Enter-eligible candidates were {', '.join(enter_symbols)}; watch-eligible candidates were "
+            f"{', '.join(watch_symbols) if watch_symbols else 'none'}."
+        )
+    if watch_symbols:
+        return (
+            "No symbols cleared the final ENTER bar. The model did not provide a structured no-trade rationale; "
+            f"watch-only candidates were {', '.join(watch_symbols)}."
+        )
+    return "No actionable candidates were available for synthesis."
+
+
 def _load_regime(db: Any, run_id: str) -> str:
     rows = db.table("regime_snapshots").select("regime").eq("run_id", run_id).limit(1).execute().data
     return rows[0]["regime"] if rows else "neutral"
@@ -408,8 +451,13 @@ async def synthesize(
         max_tool_iterations=max_iterations,
     )
 
-    output = result["output"]
-    raw_recommendations = output.get("recommendations", [])
+    raw_output = _coerce_synthesis_output(result["output"])
+    raw_recommendations = raw_output.get("recommendations", [])
+    if raw_recommendations is None:
+        logger.warning("Synthesis output omitted recommendations; defaulting to an empty list.")
+        raw_recommendations = []
+    if not isinstance(raw_recommendations, list):
+        raise TypeError("synthesis recommendations output must be a list")
     for rec in raw_recommendations:
         validate_required_fields(rec, REQUIRED_FIELDS, AGENT_NAME)
 
@@ -432,13 +480,42 @@ async def synthesize(
         for rec in persistable
     ]
 
+    enter_count = sum(1 for rec in adjusted if rec.get("action") == "enter")
+    watch_count = sum(1 for rec in adjusted if rec.get("action") == "watch")
+    run_summary = raw_output.get("run_summary")
+    if not isinstance(run_summary, str) or not run_summary.strip():
+        run_summary = _default_run_summary(
+            regime=context["regime"],
+            enter_eligible_count=len(context["enter_eligible"]),
+            watch_eligible_count=len(context["watch_eligible"]),
+            recommendation_count=len(adjusted),
+            enter_count=enter_count,
+            watch_count=watch_count,
+        )
+
+    no_recommendation_reason = raw_output.get("no_recommendation_reason")
+    if no_recommendation_reason is not None and not isinstance(no_recommendation_reason, str):
+        no_recommendation_reason = None
+    if not adjusted and (no_recommendation_reason is None or not no_recommendation_reason.strip()):
+        no_recommendation_reason = _default_no_recommendation_reason(context)
+
+    analysis_output = {
+        **raw_output,
+        "recommendations": adjusted,
+        "submitted_recommendations": raw_recommendations,
+        "run_summary": run_summary,
+        "no_recommendation_reason": no_recommendation_reason,
+        "enter_candidates_considered": [candidate["symbol"] for candidate in context["enter_eligible"]],
+        "watch_candidates_considered": [candidate["symbol"] for candidate in context["watch_eligible"]],
+    }
+
     cost_usd = compute_cost_usd(model, result["prompt_tokens"], result["output_tokens"], result["cache_read_tokens"])
     write_agent_analysis(
         db,
         run_id=run_id,
         symbol=None,
         agent_type=AGENT_TYPE,
-        output=output,
+        output=analysis_output,
         prompt_version=prompt_version(AGENT_NAME, db=db),
         model=model,
         prompt_tokens=result["prompt_tokens"],
@@ -447,7 +524,6 @@ async def synthesize(
         cost_usd=cost_usd,
     )
 
-    enter_count = sum(1 for r in written_rows if r["action"] == "enter")
     logger.info(
         "synthesis: %d recommendations written (%d enter, %d watch), %d decision_history compliance gaps",
         len(written_rows), enter_count, len(written_rows) - enter_count, len(missing_history_lookups),

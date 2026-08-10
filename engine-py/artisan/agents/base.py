@@ -157,10 +157,11 @@ def prompt_version(agent_name: str, db: Any | None = None) -> str:
 # ── Tool schemas ───────────────────────────────────────────────────────────
 # Every agent gets query_decision_history; only the Fundamental Analyst also
 # gets get_fundamentals_detail (per its <tools> section). The forced submit_*
-# schema matches each prompt's <output_format> field-for-field. Synthesis/
-# Position Review's prompts describe a top-level JSON array, but Anthropic
-# tool inputs must be a JSON object — wrapped here in a single named array
-# property ("recommendations" / "position_reviews") to satisfy that.
+# schema matches each prompt's <output_format> field-for-field. Position Review's
+# prompt describes a top-level JSON array, but Anthropic tool inputs must be a
+# JSON object — wrapped here in a single named array property
+# ("position_reviews") to satisfy that. Synthesis also uses an object wrapper so
+# it can return both per-symbol recommendations and a run-level summary.
 
 QUERY_DECISION_HISTORY_TOOL: dict[str, Any] = {
     "name": "query_decision_history",
@@ -286,8 +287,12 @@ SUBMIT_RECOMMENDATIONS_TOOL: dict[str, Any] = {
     "description": "Submit the final ranked set of recommendations for this run.",
     "input_schema": {
         "type": "object",
-        "properties": {"recommendations": {"type": "array", "items": _RECOMMENDATION_ITEM_SCHEMA}},
-        "required": ["recommendations"],
+        "properties": {
+            "recommendations": {"type": "array", "items": _RECOMMENDATION_ITEM_SCHEMA},
+            "run_summary": {"type": "string"},
+            "no_recommendation_reason": {"type": ["string", "null"]},
+        },
+        "required": ["recommendations", "run_summary", "no_recommendation_reason"],
     },
 }
 
@@ -357,6 +362,20 @@ def _execute_tool(name: str, tool_input: dict[str, Any]) -> Any:
     return fn(**tool_input)
 
 
+def _required_tool_fields(name: str, tools: list[dict[str, Any]]) -> tuple[str, ...]:
+    tool = next((tool for tool in tools if tool.get("name") == name), None)
+    schema = tool.get("input_schema", {}) if tool else {}
+    required = schema.get("required") or []
+    return tuple(field for field in required if isinstance(field, str))
+
+
+def _has_required_tool_fields(name: str, tool_input: Any, tools: list[dict[str, Any]]) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    required_fields = _required_tool_fields(name, tools)
+    return all(field in tool_input for field in required_fields)
+
+
 def _accumulate_usage(totals: dict[str, int], usage: Any) -> None:
     totals["prompt_tokens"] += getattr(usage, "input_tokens", 0) or 0
     totals["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
@@ -399,8 +418,11 @@ def run_agent(
     usage_totals = {"prompt_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
     tool_call_log: list[dict[str, Any]] = []
 
-    for iteration in range(max_tool_iterations):
-        is_last = iteration == max_tool_iterations - 1
+    total_iterations_allowed = max_tool_iterations
+    invalid_forced_tool_retries_remaining = 1
+    iteration = 0
+    while iteration < total_iterations_allowed:
+        is_last = iteration == total_iterations_allowed - 1
         tool_choice: dict[str, Any] = (
             {"type": "tool", "name": forced_tool_name} if is_last else {"type": "auto"}
         )
@@ -417,20 +439,51 @@ def run_agent(
 
         tool_use_blocks = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
         forced_call = next((b for b in tool_use_blocks if b.name == forced_tool_name), None)
+        tool_results = []
         if forced_call is not None:
-            return {"output": forced_call.input, "tool_calls": tool_call_log, **usage_totals}
+            if _has_required_tool_fields(forced_tool_name, forced_call.input, tools):
+                return {"output": forced_call.input, "tool_calls": tool_call_log, **usage_totals}
 
-        if not tool_use_blocks:
+            required_fields = ", ".join(_required_tool_fields(forced_tool_name, tools))
+            logger.warning(
+                "Ignoring %s call with missing required top-level fields; got keys=%s required=%s",
+                forced_tool_name,
+                sorted(forced_call.input.keys()) if isinstance(forced_call.input, dict) else type(forced_call.input).__name__,
+                required_fields,
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": forced_call.id,
+                    "content": json.dumps(
+                        {
+                            "error": (
+                                f"{forced_tool_name} is missing required top-level fields: {required_fields}. "
+                                f"Call {forced_tool_name} again with every required field populated."
+                            )
+                        }
+                    ),
+                }
+            )
+            tool_use_blocks = [block for block in tool_use_blocks if block is not forced_call]
+            if is_last and invalid_forced_tool_retries_remaining > 0:
+                total_iterations_allowed += 1
+                invalid_forced_tool_retries_remaining -= 1
+
+        if not tool_use_blocks and not tool_results:
             # Auto mode let the model reply without calling a tool — nudge it
             # to continue rather than treating this as a final answer.
             messages.append({"role": "assistant", "content": response.content})
-            messages.append(
-                {"role": "user", "content": "Please continue and call the required tool when ready."}
+            reminder = (
+                f"Please continue and call {forced_tool_name} with every required top-level field populated."
+                if forced_call is not None
+                else "Please continue and call the required tool when ready."
             )
+            messages.append({"role": "user", "content": reminder})
+            iteration += 1
             continue
 
         messages.append({"role": "assistant", "content": response.content})
-        tool_results = []
         for block in tool_use_blocks:
             result = executor(block.name, block.input)
             tool_call_log.append({"name": block.name, "input": block.input})
@@ -438,8 +491,9 @@ def run_agent(
                 {"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result, default=str)}
             )
         messages.append({"role": "user", "content": tool_results})
+        iteration += 1
 
-    raise RuntimeError(f"Agent did not call {forced_tool_name} within {max_tool_iterations} iterations")
+    raise RuntimeError(f"Agent did not call {forced_tool_name} within {total_iterations_allowed} iterations")
 
 
 # ── Cost tracking ────────────────────────────────────────────────────────

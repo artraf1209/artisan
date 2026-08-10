@@ -1,5 +1,5 @@
 import { createServerClient } from '@/lib/supabase/server'
-import { loadSynthesisLog, type LogRange } from '@/lib/briefing-logs'
+import { loadSynthesisLog, type LogRange, type SynthesisLogData } from '@/lib/briefing-logs'
 import type { SentimentBucket } from '@/lib/recommendation-detail'
 import AgentLogCard from '@/components/briefing/AgentLogCard'
 import LogFilterBar from '@/components/briefing/LogFilterBar'
@@ -31,6 +31,58 @@ export default async function SynthesisAgentLogPage({
   const supabase = (await createServerClient()) as any
   const entries = await loadSynthesisLog(supabase, { symbol, range })
 
+  const renderEntry = (entry: { id: string; symbol: string; model: string | null; createdAt: string; data: SynthesisLogData }) => {
+    if (entry.data.kind === 'summary') {
+      return (
+        <AgentLogCard
+          key={entry.id}
+          symbol="Run Summary"
+          createdAt={entry.createdAt}
+          model={entry.model}
+          summary={entry.data.run_summary}
+          fields={[
+            {
+              label: 'Outcome',
+              value:
+                entry.data.recommendation_count > 0
+                  ? `${entry.data.recommendation_count} recommendation(s)`
+                  : 'No recommendations',
+            },
+          ]}
+          listFields={[
+            {
+              label: 'No-trade reason',
+              items: entry.data.no_recommendation_reason ? [entry.data.no_recommendation_reason] : [],
+            },
+            { label: 'Enter candidates considered', items: entry.data.enter_candidates_considered },
+            { label: 'Watch candidates considered', items: entry.data.watch_candidates_considered },
+          ]}
+        />
+      )
+    }
+
+    return (
+      <AgentLogCard
+        key={entry.id}
+        symbol={entry.symbol}
+        createdAt={entry.createdAt}
+        model={entry.model}
+        qualifier={{
+          label: 'Conviction',
+          value: entry.data.conviction,
+          tone: bucketConviction(entry.data.conviction),
+        }}
+        summary={entry.data.thesis}
+        fields={[{ label: 'Action', value: entry.data.action }]}
+        listFields={[
+          { label: 'Invalidation conditions', items: entry.data.invalidation_conditions },
+          { label: 'Redundancy note', items: entry.data.redundancy_note ? [entry.data.redundancy_note] : [] },
+        ]}
+        historicalPrecedent={entry.data.historical_precedent}
+      />
+    )
+  }
+
   return (
     <>
       <LogFilterBar action="/briefing/synthesis" symbol={symbol} range={range} />
@@ -43,28 +95,7 @@ export default async function SynthesisAgentLogPage({
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {entries.map((entry) => (
-            <AgentLogCard
-              key={entry.id}
-              symbol={entry.symbol}
-              createdAt={entry.createdAt}
-              model={entry.model}
-              qualifier={{
-                label: 'Conviction',
-                value: entry.data.conviction,
-                tone: bucketConviction(entry.data.conviction),
-              }}
-              summary={entry.data.thesis}
-              fields={[{ label: 'Action', value: entry.data.action }]}
-              listFields={[
-                { label: 'Invalidation conditions', items: entry.data.invalidation_conditions },
-                { label: 'Redundancy note', items: entry.data.redundancy_note ? [entry.data.redundancy_note] : [] },
-              ]}
-              historicalPrecedent={entry.data.historical_precedent}
-            />
-          ))}
-        </div>
+        <div className="space-y-4">{entries.map(renderEntry)}</div>
       )}
     </>
   )

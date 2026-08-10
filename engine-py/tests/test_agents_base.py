@@ -166,6 +166,96 @@ def test_run_agent_returns_immediately_when_forced_tool_called_on_first_turn() -
     assert len(client.messages.calls) == 1
 
 
+def test_run_agent_ignores_invalid_early_forced_tool_call_and_retries() -> None:
+    responses = [
+        FakeResponse(
+            content=[FakeToolUseBlock("submit_technical_analysis", {}, "call-1")],
+            usage=FakeUsage(input_tokens=300, output_tokens=100, cache_read_input_tokens=0),
+        ),
+        FakeResponse(
+            content=[FakeToolUseBlock("submit_technical_analysis", TECHNICAL_OUTPUT, "call-2")],
+            usage=FakeUsage(input_tokens=350, output_tokens=120, cache_read_input_tokens=0),
+        ),
+    ]
+    client = FakeClient(responses)
+
+    result = run_agent(
+        client,
+        model="claude-haiku-4-5-20251001",
+        system_prompt="sys",
+        user_content="data",
+        tools=[SUBMIT_TECHNICAL_ANALYSIS_TOOL],
+        forced_tool_name="submit_technical_analysis",
+        max_tool_iterations=2,
+        tool_executor=lambda name, tool_input: {},
+    )
+
+    assert result["output"] == TECHNICAL_OUTPUT
+    assert len(client.messages.calls) == 2
+    assert client.messages.calls[0]["tool_choice"] == {"type": "auto"}
+    assert client.messages.calls[1]["tool_choice"] == {"type": "tool", "name": "submit_technical_analysis"}
+
+
+def test_run_agent_grants_one_extra_retry_when_final_forced_call_is_invalid() -> None:
+    responses = [
+        FakeResponse(
+            content=[FakeToolUseBlock("submit_technical_analysis", {}, "call-1")],
+            usage=FakeUsage(input_tokens=300, output_tokens=100, cache_read_input_tokens=0),
+        ),
+        FakeResponse(
+            content=[FakeToolUseBlock("submit_technical_analysis", TECHNICAL_OUTPUT, "call-2")],
+            usage=FakeUsage(input_tokens=350, output_tokens=120, cache_read_input_tokens=0),
+        ),
+    ]
+    client = FakeClient(responses)
+
+    result = run_agent(
+        client,
+        model="claude-haiku-4-5-20251001",
+        system_prompt="sys",
+        user_content="data",
+        tools=[SUBMIT_TECHNICAL_ANALYSIS_TOOL],
+        forced_tool_name="submit_technical_analysis",
+        max_tool_iterations=1,
+        tool_executor=lambda name, tool_input: {},
+    )
+
+    assert result["output"] == TECHNICAL_OUTPUT
+    assert len(client.messages.calls) == 2
+    assert client.messages.calls[0]["tool_choice"] == {"type": "tool", "name": "submit_technical_analysis"}
+    assert client.messages.calls[1]["tool_choice"] == {"type": "tool", "name": "submit_technical_analysis"}
+
+
+def test_run_agent_stops_after_single_extra_retry_if_forced_tool_keeps_being_invalid() -> None:
+    responses = [
+        FakeResponse(
+            content=[FakeToolUseBlock("submit_technical_analysis", {}, "call-1")],
+            usage=FakeUsage(input_tokens=300, output_tokens=100, cache_read_input_tokens=0),
+        ),
+        FakeResponse(
+            content=[FakeToolUseBlock("submit_technical_analysis", {}, "call-2")],
+            usage=FakeUsage(input_tokens=350, output_tokens=120, cache_read_input_tokens=0),
+        ),
+    ]
+    client = FakeClient(responses)
+
+    with pytest.raises(RuntimeError, match="submit_technical_analysis"):
+        run_agent(
+            client,
+            model="claude-haiku-4-5-20251001",
+            system_prompt="sys",
+            user_content="data",
+            tools=[SUBMIT_TECHNICAL_ANALYSIS_TOOL],
+            forced_tool_name="submit_technical_analysis",
+            max_tool_iterations=1,
+            tool_executor=lambda name, tool_input: {},
+        )
+
+    assert len(client.messages.calls) == 2
+    assert client.messages.calls[0]["tool_choice"] == {"type": "tool", "name": "submit_technical_analysis"}
+    assert client.messages.calls[1]["tool_choice"] == {"type": "tool", "name": "submit_technical_analysis"}
+
+
 def test_run_agent_raises_if_forced_tool_never_called() -> None:
     responses = [
         FakeResponse(content=[FakeTextBlock("I am thinking...")], usage=FakeUsage()),

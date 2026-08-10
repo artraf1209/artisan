@@ -199,6 +199,34 @@ async def test_zero_risk_budget_downgrades_enter_to_watch(monkeypatch, strategy_
 
 
 @pytest.mark.asyncio
+async def test_empty_synthesis_payload_still_persists_run_level_summary(monkeypatch, strategy_params) -> None:
+    db = FakeDB(_base_tables())
+    monkeypatch.setattr(
+        synthesis,
+        "run_agent",
+        lambda *a, **k: _run_agent_result({}, tool_calls=[]),
+    )
+
+    result = await synthesis.synthesize(
+        run_id="run-1",
+        strategy_id="strategy-1",
+        strategy_params=strategy_params,
+        available_risk_budget=1000.0,
+        db=db,
+        client=object(),
+    )
+
+    assert result["recommendations"] == []
+    assert len(db.agent_analyses_inserted) == 1
+    output = db.agent_analyses_inserted[0]["output"]
+    assert output["recommendations"] == []
+    assert output["submitted_recommendations"] == []
+    assert output["run_summary"]
+    assert output["no_recommendation_reason"]
+    assert output["enter_candidates_considered"] == ["AAPL", "MSFT"]
+
+
+@pytest.mark.asyncio
 async def test_enter_on_non_eligible_symbol_is_downgraded(monkeypatch, strategy_params) -> None:
     db = FakeDB(_base_tables())
     # TSLA is not actionable -> not ENTER-eligible, but the mocked model tries anyway

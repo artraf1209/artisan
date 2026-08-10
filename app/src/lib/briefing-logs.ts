@@ -28,6 +28,26 @@ export interface LogEntry<T> {
   data: T
 }
 
+interface SynthesisRunOutput {
+  recommendations?: SynthesisRecommendationEntry[]
+  submitted_recommendations?: SynthesisRecommendationEntry[]
+  run_summary?: string
+  no_recommendation_reason?: string | null
+  enter_candidates_considered?: string[]
+  watch_candidates_considered?: string[]
+}
+
+export type SynthesisLogData =
+  | ({
+      kind: 'summary'
+      run_summary: string
+      no_recommendation_reason: string | null
+      recommendation_count: number
+      enter_candidates_considered: string[]
+      watch_candidates_considered: string[]
+    })
+  | ({ kind: 'recommendation' } & SynthesisRecommendationEntry)
+
 interface RawAgentAnalysisRow {
   id: string
   symbol: string | null
@@ -131,14 +151,7 @@ async function loadRunLevelLog<Item, Entry>(
 }
 
 export function loadSynthesisLog(supabase: any, filters: { symbol?: string; range?: LogRange }) {
-  return loadRunLevelLog<SynthesisRecommendationEntry, SynthesisRecommendationEntry>(
-    supabase,
-    'synthesis',
-    filters,
-    'recommendations',
-    (item) => item.symbol,
-    (item) => item,
-  )
+  return loadSynthesisEntries(supabase, filters)
 }
 
 export function loadPositionReviewLog(supabase: any, filters: { symbol?: string; range?: LogRange }) {
@@ -154,4 +167,68 @@ export function loadPositionReviewLog(supabase: any, filters: { symbol?: string;
       suggested_new_target: toNumber(item.suggested_new_target),
     }),
   )
+}
+
+async function loadSynthesisEntries(
+  supabase: any,
+  filters: { symbol?: string; range?: LogRange },
+): Promise<LogEntry<SynthesisLogData>[]> {
+  const rows = await loadRawRows(supabase, 'synthesis', { range: filters.range })
+
+  const entries: LogEntry<SynthesisLogData>[] = []
+  for (const row of rows) {
+    const output = (row.output as SynthesisRunOutput | null) ?? {}
+    const recommendations = Array.isArray(output.recommendations) ? output.recommendations : []
+    const enterCandidates = Array.isArray(output.enter_candidates_considered)
+      ? output.enter_candidates_considered
+      : []
+    const watchCandidates = Array.isArray(output.watch_candidates_considered)
+      ? output.watch_candidates_considered
+      : []
+
+    const consideredSymbols = new Set<string>([
+      ...enterCandidates,
+      ...watchCandidates,
+      ...recommendations.map((item) => item.symbol),
+    ])
+    const summaryMatchesFilter = !filters.symbol || consideredSymbols.has(filters.symbol)
+    const shouldIncludeSummary =
+      summaryMatchesFilter &&
+      (recommendations.length === 0 || Boolean(output.run_summary) || Boolean(output.no_recommendation_reason))
+
+    if (shouldIncludeSummary) {
+      entries.push({
+        id: `${row.id}-summary`,
+        symbol: 'RUN',
+        model: row.model,
+        createdAt: row.created_at,
+        data: {
+          kind: 'summary',
+          run_summary: output.run_summary ?? 'No synthesis summary was captured for this run.',
+          no_recommendation_reason: output.no_recommendation_reason ?? null,
+          recommendation_count: recommendations.length,
+          enter_candidates_considered: enterCandidates,
+          watch_candidates_considered: watchCandidates,
+        },
+      })
+    }
+
+    for (const item of recommendations) {
+      if (filters.symbol && item.symbol !== filters.symbol) {
+        continue
+      }
+      entries.push({
+        id: `${row.id}-${item.symbol}`,
+        symbol: item.symbol,
+        model: row.model,
+        createdAt: row.created_at,
+        data: {
+          kind: 'recommendation',
+          ...item,
+        },
+      })
+    }
+  }
+
+  return entries
 }
