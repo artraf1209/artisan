@@ -7,7 +7,7 @@ const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit' })
 
 export const metadata: Metadata = {
   title: 'Artisan',
-  description: 'Installable mobile-first trading dashboard for signals, approvals, and briefings.',
+  description: 'Installable AI trading workspace for dashboard, recommendations, briefing, and strategy controls.',
   manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,

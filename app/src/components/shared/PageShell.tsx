@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import type { LucideIcon } from 'lucide-react'
-import Navbar from '@/components/shared/Navbar'
+import AppShell from '@/components/shared/AppShell'
 
 type Action = {
   href: string
@@ -9,7 +9,7 @@ type Action = {
 }
 
 export default function PageShell({
-  eyebrow = 'Artisan PWA',
+  eyebrow = 'Artisan',
   title,
   subtitle,
   actions = [],
@@ -22,9 +22,8 @@ export default function PageShell({
   children: React.ReactNode
 }) {
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <Navbar />
-      <main className="mx-auto flex min-h-screen w-full max-w-7xl min-w-0 flex-col px-4 pb-32 pt-6 sm:px-6 lg:px-8 lg:pb-12 lg:pt-10 xl:px-10">
+    <AppShell>
+      <div className="space-y-5">
         <section className="mb-6 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-3">
             <p className="text-[0.7rem] font-medium uppercase tracking-[0.28em] text-muted-foreground">
@@ -43,16 +42,15 @@ export default function PageShell({
           </div>
 
           {actions.length > 0 ? (
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               {actions.map(({ href, label, icon: Icon }) => (
                 <Link
                   key={href}
                   href={href}
-                  aria-label={label}
-                  title={label}
-                  className="flex h-14 w-14 items-center justify-center rounded-full border border-border bg-card/90 text-muted-foreground shadow-[0_18px_40px_rgba(0,0,0,0.35)] transition hover:-translate-y-0.5 hover:text-foreground"
+                  className="inline-flex items-center gap-2 rounded-full border border-border bg-card/90 px-4 py-2.5 text-sm font-medium text-muted-foreground shadow-[0_18px_40px_rgba(0,0,0,0.2)] transition hover:-translate-y-0.5 hover:text-foreground"
                 >
                   <Icon size={22} />
+                  <span>{label}</span>
                 </Link>
               ))}
             </div>
@@ -60,7 +58,7 @@ export default function PageShell({
         </section>
 
         <section className="space-y-5">{children}</section>
-      </main>
-    </div>
+      </div>
+    </AppShell>
   )
 }

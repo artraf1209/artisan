@@ -4,15 +4,15 @@ test('hybrid pages are reachable from the navbar', async ({ page }) => {
   await page.goto('/dashboard')
   const primaryNav = page.getByRole('navigation', { name: 'Primary' })
 
-  await primaryNav.getByRole('link', { name: 'Queue', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Queue' })).toBeVisible()
+  await primaryNav.getByRole('link', { name: 'Recommendations', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Recommendations' })).toBeVisible()
   await expect(page.locator('main')).toContainText(
-    /No pending approvals|Review pending hybrid-engine signals/i,
+    /No pending entry recommendations|Pending ENTER ideas awaiting a human decision/i,
   )
 
-  await primaryNav.getByRole('link', { name: 'Briefings', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Briefings' })).toBeVisible()
+  await primaryNav.getByRole('link', { name: 'Briefing', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Briefing' })).toBeVisible()
   await expect(page.locator('main')).toContainText(
-    /No briefings yet|Morning summaries generated/i,
+    /No briefings yet|Most recent daily digests returned/i,
   )
 })
