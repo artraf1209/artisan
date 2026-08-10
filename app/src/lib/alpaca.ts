@@ -7,62 +7,42 @@ export interface AlpacaAccountState {
   last_equity: number | null
 }
 
-function toNumber(value: unknown): number | null {
-  if (value == null || value === '') {
-    return null
-  }
-
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function round(value: number, digits: number) {
-  const factor = 10 ** digits
-  return Math.round(value * factor) / factor
-}
-
+/**
+ * Proxies through the get-account-state edge function rather than calling
+ * Alpaca directly — per CLAUDE.md, no Next.js code may call the Alpaca API
+ * server-side; only Supabase edge functions may (execute-trade for orders,
+ * this one for read-only account state). Same auth pattern already used by
+ * /api/queue/[id]/approve's invokeExecuteTrade(): service-role-authenticated
+ * fetch to /functions/v1/<name>.
+ */
 export async function fetchAlpacaAccountState(): Promise<AlpacaAccountState> {
-  const apiKey = process.env.ALPACA_API_KEY
-  const apiSecret = process.env.ALPACA_API_SECRET
-  const baseUrl = (process.env.ALPACA_BASE_URL ?? 'https://paper-api.alpaca.markets').replace(/\/$/, '')
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-  if (!apiKey || !apiSecret) {
-    throw new Error('Alpaca credentials are not configured.')
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Supabase function credentials are not configured.')
   }
 
-  const response = await fetch(`${baseUrl}/v2/account`, {
+  const response = await fetch(`${supabaseUrl}/functions/v1/get-account-state`, {
     method: 'GET',
     headers: {
-      'APCA-API-KEY-ID': apiKey,
-      'APCA-API-SECRET-KEY': apiSecret,
-      'Content-Type': 'application/json',
+      Authorization: `Bearer ${serviceRoleKey}`,
     },
     cache: 'no-store',
   })
 
-  if (!response.ok) {
-    throw new Error((await response.text()) || 'Failed to load Alpaca account state.')
+  const body = (await response.json().catch(() => null)) as (AlpacaAccountState & { error?: string }) | null
+
+  if (!response.ok || !body) {
+    throw new Error(body?.error || 'Failed to load Alpaca account state.')
   }
 
-  const payload = (await response.json()) as Record<string, unknown>
-  const equity = toNumber(payload.equity)
-  const lastEquity = toNumber(payload.last_equity)
-  const changeToday = toNumber(payload.change_today)
-  const dayPnl =
-    equity != null && lastEquity != null ? round(equity - lastEquity, 2) : null
-  const dayPnlPct =
-    equity != null && lastEquity != null && lastEquity !== 0
-      ? round(((equity - lastEquity) / lastEquity) * 100, 2)
-      : changeToday != null
-        ? round(changeToday * 100, 2)
-        : null
-
   return {
-    equity,
-    cash: toNumber(payload.cash),
-    buying_power: toNumber(payload.buying_power),
-    day_pnl: dayPnl,
-    day_pnl_pct: dayPnlPct,
-    last_equity: lastEquity,
+    equity: body.equity ?? null,
+    cash: body.cash ?? null,
+    buying_power: body.buying_power ?? null,
+    day_pnl: body.day_pnl ?? null,
+    day_pnl_pct: body.day_pnl_pct ?? null,
+    last_equity: body.last_equity ?? null,
   }
 }
