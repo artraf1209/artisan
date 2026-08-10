@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import date
+
+import pandas as pd
 import pytest
 
 import artisan.jobs.briefing as briefing_job
@@ -145,6 +148,184 @@ def test_run_score_returns_early_when_strategy_is_paused(monkeypatch) -> None:
     assert result["paused"] is True
     assert result["factor_scores"] == 0
     assert result["entry_signals"] == 0
+
+
+class _RecordingQuery:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, object]] = []
+
+    def select(self, _fields: str):
+        return self
+
+    def eq(self, column: str, value):
+        self.calls.append(("eq", column, value))
+        return self
+
+    def gte(self, column: str, value):
+        self.calls.append(("gte", column, value))
+        return self
+
+    def lt(self, column: str, value):
+        self.calls.append(("lt", column, value))
+        return self
+
+    def in_(self, column: str, value):
+        self.calls.append(("in_", column, value))
+        return self
+
+    def order(self, column: str, desc: bool = False):
+        self.calls.append(("order", column, desc))
+        return self
+
+
+class _RecordingDB:
+    def __init__(self, query: _RecordingQuery) -> None:
+        self.query = query
+
+    def table(self, _name: str) -> _RecordingQuery:
+        return self.query
+
+
+def test_load_spy_bars_bounds_query_to_backdated_run(monkeypatch) -> None:
+    query = _RecordingQuery()
+    db = _RecordingDB(query)
+
+    monkeypatch.setattr(score_job, "fetch_all_pages", lambda build_query, page_size=1000: (build_query(), [])[1])
+
+    score_job._load_spy_bars(db, as_of_date=date(2026, 8, 7))
+
+    assert ("gte", "bar_time", "2025-07-03") in query.calls
+    assert ("lt", "bar_time", "2026-08-08T00:00:00+00:00") in query.calls
+
+
+def test_load_price_wide_close_bounds_query_to_backdated_run(monkeypatch) -> None:
+    query = _RecordingQuery()
+    db = _RecordingDB(query)
+
+    monkeypatch.setattr(
+        score_job,
+        "settings",
+        type("Settings", (), {"price_history_lookback_days": 450})(),
+    )
+    monkeypatch.setattr(score_job, "fetch_all_pages", lambda build_query, page_size=1000: (build_query(), [])[1])
+
+    score_job._load_price_wide_close(db, ["AAPL"], as_of_date=date(2026, 8, 7))
+
+    assert ("in_", "symbol", ["AAPL", "SPY"]) in query.calls
+    assert ("gte", "bar_time", "2025-05-14") in query.calls
+    assert ("lt", "bar_time", "2026-08-08T00:00:00+00:00") in query.calls
+
+
+def test_run_regime_step_uses_backdated_now_for_snapshot_date(monkeypatch) -> None:
+    db = FakeDB({"pipeline_runs": [{"id": "run-1", "status": "ingested"}], "regime_snapshots": []})
+    captured: dict[str, object] = {}
+
+    def fake_load_spy_bars(_db, *, as_of_date=None):
+        captured["as_of_date"] = as_of_date
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        score_job,
+        "_load_spy_bars",
+        fake_load_spy_bars,
+    )
+    monkeypatch.setattr(
+        score_job,
+        "classify_regime",
+        lambda _spy_bars: {
+            "regime": "neutral",
+            "spy_close": 1.0,
+            "spy_sma50": 1.0,
+            "spy_sma200": 1.0,
+            "spy_adx14": 25.0,
+            "spy_vol_20d_annualized": 0.1,
+            "spy_vol_percentile_252d": 0.5,
+            "spy_drawdown_from_high_pct": -0.01,
+        },
+    )
+
+    score_job.run_regime_step(
+        db,
+        "run-1",
+        now=score_job.datetime(2026, 8, 7, 21, 5, tzinfo=score_job.UTC),
+    )
+
+    assert captured["as_of_date"] == date(2026, 8, 7)
+    assert db.inserts["regime_snapshots"][0]["date"] == "2026-08-07"
+
+
+def test_run_factor_scoring_step_passes_backdated_timestamp(monkeypatch, strategy_params) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(score_job, "_load_active_universe", lambda _db, _strategy_id: ["AAPL"])
+    def fake_load_price_wide_close(_db, _symbols, *, as_of_date=None):
+        captured["as_of_date"] = as_of_date
+        return pd.DataFrame(), pd.Series(dtype=float)
+
+    monkeypatch.setattr(
+        score_job,
+        "_load_price_wide_close",
+        fake_load_price_wide_close,
+    )
+    monkeypatch.setattr(score_job, "_load_fundamentals", lambda _db, _symbols: ([{"symbol": "AAPL"}], {"AAPL": []}))
+    monkeypatch.setattr(score_job, "_load_sectors", lambda _db, _symbols: {"AAPL": "Tech"})
+    def fake_score_universe(**kwargs):
+        captured["scored_at"] = kwargs["scored_at"]
+        return []
+
+    monkeypatch.setattr(
+        score_job,
+        "score_universe",
+        fake_score_universe,
+    )
+
+    score_job.run_factor_scoring_step(
+        db=FakeDB({}),
+        run_id="run-1",
+        strategy_id="strategy-1",
+        strategy_params=strategy_params,
+        now=score_job.datetime(2026, 8, 7, 21, 5, tzinfo=score_job.UTC),
+    )
+
+    assert captured["as_of_date"] == date(2026, 8, 7)
+    assert captured["scored_at"] == "2026-08-07T21:05:00+00:00"
+
+
+def test_run_entry_gates_step_passes_backdated_timestamp(monkeypatch, strategy_params) -> None:
+    db = FakeDB({"portfolio_snapshots": [{"drawdown_from_high_pct": -0.02}], "entry_signals": []})
+    captured: dict[str, object] = {}
+
+    class FakeTechnicalScorer:
+        def __init__(self, db):
+            pass
+
+        def score_symbol(self, symbol):
+            return {"_snapshot": {"close": 100.0}, "close": 100.0}
+
+    monkeypatch.setattr(score_job, "TechnicalScorer", FakeTechnicalScorer)
+    def fake_evaluate_entry(**kwargs):
+        captured["evaluated_at"] = kwargs["evaluated_at"]
+        return {"symbol": kwargs["symbol"], "actionable": False, "setup_type": None}
+
+    monkeypatch.setattr(
+        score_job,
+        "evaluate_entry",
+        fake_evaluate_entry,
+    )
+
+    score_job.run_entry_gates_step(
+        db,
+        run_id="run-1",
+        strategy_id="strategy-1",
+        strategy_params=strategy_params,
+        regime="neutral",
+        factor_results=[{"symbol": "AAPL", "rank": 1, "hard_filter_pass": True}],
+        spy_df=pd.DataFrame(),
+        capital=100_000.0,
+        now=score_job.datetime(2026, 8, 7, 21, 5, tzinfo=score_job.UTC),
+    )
+
+    assert captured["evaluated_at"] == "2026-08-07T21:05:00+00:00"
 
 
 def test_run_entry_gates_step_only_evaluates_top_shortlist_size_by_rank(monkeypatch, strategy_params) -> None:
