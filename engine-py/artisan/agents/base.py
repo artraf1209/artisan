@@ -299,13 +299,17 @@ def run_agent(
     forced_tool_name so a valid structured submission is guaranteed rather
     than an open-ended text reply.
 
-    Returns {"output": <parsed forced-tool input>, "prompt_tokens": int,
-    "output_tokens": int, "cache_read_tokens": int}.
+    Returns {"output": <parsed forced-tool input>, "tool_calls": [{"name", "input"}, ...]
+    (every intermediate tool call made before the forced submission, in order —
+    lets callers like Synthesis audit "was query_decision_history actually
+    called per candidate" post-hoc), "prompt_tokens": int, "output_tokens": int,
+    "cache_read_tokens": int}.
     """
     executor = tool_executor or _execute_tool
     system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
     usage_totals = {"prompt_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+    tool_call_log: list[dict[str, Any]] = []
 
     for iteration in range(max_tool_iterations):
         is_last = iteration == max_tool_iterations - 1
@@ -326,7 +330,7 @@ def run_agent(
         tool_use_blocks = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
         forced_call = next((b for b in tool_use_blocks if b.name == forced_tool_name), None)
         if forced_call is not None:
-            return {"output": forced_call.input, **usage_totals}
+            return {"output": forced_call.input, "tool_calls": tool_call_log, **usage_totals}
 
         if not tool_use_blocks:
             # Auto mode let the model reply without calling a tool — nudge it
@@ -341,6 +345,7 @@ def run_agent(
         tool_results = []
         for block in tool_use_blocks:
             result = executor(block.name, block.input)
+            tool_call_log.append({"name": block.name, "input": block.input})
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result, default=str)}
             )

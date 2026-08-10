@@ -21,6 +21,23 @@ RISK_ON_DRAWDOWN_MAX_PCT = 0.05  # "within 5% of the trailing 252d high"
 RISK_OFF_VOL_PERCENTILE_MIN = 0.80  # "above the trailing 252d 80th percentile"
 RISK_OFF_DRAWDOWN_MIN_PCT = 0.10  # "more than 10% below the trailing 252d high"
 
+# ENTER-eligibility rank thresholds per regime (spec §5.1 + §9.2). Not consumed
+# here — this is the shared home for the constant so both Synthesis (v2-11) and
+# any future UI (e.g. /strategy, v2-21) apply the identical cutoff.
+RISK_OFF_ENTER_ELIGIBLE_COUNT = 3
+
+
+def enter_eligible_rank_cutoff(regime: str, shortlist_size: int) -> int:
+    """The maximum factor_scores.rank still ENTER-eligible for this regime:
+    top decile in risk_on, top 5% in neutral, a fixed top 2-3 names in risk_off
+    (clean setups only, enforced by the actionable/veto checks around this)."""
+    if regime == "risk_on":
+        return max(1, round(shortlist_size * 0.10))
+    if regime == "risk_off":
+        return RISK_OFF_ENTER_ELIGIBLE_COUNT
+    # neutral, and any unrecognized regime value: the more conservative default
+    return max(1, round(shortlist_size * 0.05))
+
 
 def classify_regime(spy_bars: pd.DataFrame) -> dict[str, Any]:
     """Classify the market regime (risk_on/neutral/risk_off) from SPY daily bars.
