@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from artisan.adapters import (
+    AlpacaAccountAdapter,
     AlpacaPricesAdapter,
     FinnhubNewsAdapter,
     FmpFundamentalsAdapter,
@@ -12,37 +13,40 @@ from artisan.adapters import (
 from artisan.adapters.fmp_screener import FmpScreenerAdapter, FmpScreenerUnavailableError
 from artisan.config import settings
 from artisan.db.client import get_client
+from artisan.strategy_params import get_strategy_params
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
+
+TRAILING_RETURN_WINDOW_DAYS = 252
 
 
 def is_within_fmp_quota_window(now: datetime | None = None) -> bool:
     """
     Check if current UTC time is within the allowed FMP quota window.
-    
+
     FMP quota resets at configured hour (default: 8pm UTC / 3pm EST).
     Buffer period (default: 60min) creates the allowed window start
     (default: 9pm UTC / 4pm EST).
-    
+
     Returns True if within window, False if before window (pre-reset).
     """
     now = now or datetime.now(UTC)
-    
+
     reset_hour = settings.fmp_quota_reset_hour_utc
     reset_minute = settings.fmp_quota_reset_minute_utc
     buffer_minutes = settings.fmp_quota_buffer_minutes
-    
+
     # Calculate earliest allowed time (reset time + buffer)
     allowed_hour = reset_hour + (reset_minute + buffer_minutes) // 60
     allowed_minute = (reset_minute + buffer_minutes) % 60
-    
+
     # Handle hour overflow past midnight
     allowed_hour = allowed_hour % 24
-    
+
     current_minutes = now.hour * 60 + now.minute
     allowed_minutes = allowed_hour * 60 + allowed_minute
-    
+
     return current_minutes >= allowed_minutes
 
 
@@ -52,32 +56,32 @@ def check_fmp_quota_guard(
 ) -> tuple[bool, str]:
     """
     Evaluate whether to proceed with FMP API calls or skip as pre-reset.
-    
+
     Args:
         now: Optional datetime for testing (defaults to now UTC)
         force_override: If True, bypasses the guard (for manual operator runs)
-    
+
     Returns:
         Tuple of (should_proceed: bool, reason: str)
     """
     now = now or datetime.now(UTC)
-    
+
     # Force override takes priority - operator explicitly requested run
     if force_override or settings.force_pre_reset_ingest:
         return True, "forced_pre_reset=true"
-    
+
     # Check if within allowed window
     if is_within_fmp_quota_window(now):
         return True, "within_quota_window"
-    
+
     # Pre-reset - return skip status
     reset_time = f"{settings.fmp_quota_reset_hour_utc:02d}:{settings.fmp_quota_reset_minute_utc:02d} UTC"
     allowed_time = (
-        settings.fmp_quota_reset_hour_utc 
+        settings.fmp_quota_reset_hour_utc
         + (settings.fmp_quota_reset_minute_utc + settings.fmp_quota_buffer_minutes) // 60
     ) % 24
     allowed_time_str = f"{allowed_time:02d}:{(settings.fmp_quota_reset_minute_utc + settings.fmp_quota_buffer_minutes) % 60:02d} UTC"
-    
+
     logger.info(
         "FMP quota guard blocked run: current_time=%s, reset_time=%s, allowed_time=%s, buffer=%dm",
         now.strftime("%H:%M UTC"),
@@ -85,7 +89,7 @@ def check_fmp_quota_guard(
         allowed_time_str,
         settings.fmp_quota_buffer_minutes,
     )
-    
+
     return False, "skipped_pre_reset_window"
 
 
@@ -227,6 +231,101 @@ def _news_lookback_start(today: date) -> date:
     return today - timedelta(days=3 if today.weekday() == 0 else 1)
 
 
+def _create_pipeline_run(db, run_date: date) -> str:
+    response = (
+        db.table("pipeline_runs")
+        .insert({"run_date": run_date.isoformat(), "status": "running"})
+        .execute()
+    )
+    return response.data[0]["id"]
+
+
+def _update_pipeline_run(db, run_id: str, **fields: Any) -> None:
+    db.table("pipeline_runs").update(fields).eq("id", run_id).execute()
+
+
+def _fetch_latest_portfolio_snapshot(db, account_id: str) -> dict | None:
+    rows = (
+        db.table("portfolio_snapshots")
+        .select("equity, high_water_mark, snapshot_date")
+        .eq("account_id", account_id)
+        .order("snapshot_date", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def _fetch_trailing_baseline_snapshot(db, account_id: str, since: date) -> dict | None:
+    rows = (
+        db.table("portfolio_snapshots")
+        .select("equity, snapshot_date")
+        .eq("account_id", account_id)
+        .gte("snapshot_date", since.isoformat())
+        .order("snapshot_date")
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def _fetch_open_positions_state(db, account_id: str) -> tuple[int, float]:
+    rows = (
+        db.table("portfolio_positions")
+        .select("unrealized_pnl")
+        .eq("account_id", account_id)
+        .execute()
+        .data
+    )
+    total_unrealized = sum(float(row.get("unrealized_pnl") or 0) for row in rows)
+    return len(rows), total_unrealized
+
+
+def _write_portfolio_snapshot(db, *, run_id: str, run_date: date, account: dict[str, float]) -> dict[str, Any]:
+    """Insert one portfolio_snapshots row. This is the only place in the system
+    that writes this table — no other job touches it."""
+    account_id = settings.account_id
+    equity = account["equity"]
+    cash = account["cash"]
+
+    prior = _fetch_latest_portfolio_snapshot(db, account_id)
+    prior_hwm = (
+        float(prior["high_water_mark"])
+        if prior and prior.get("high_water_mark") is not None
+        else None
+    )
+    high_water_mark = max(prior_hwm, equity) if prior_hwm is not None else equity
+    drawdown_from_high_pct = (equity - high_water_mark) / high_water_mark if high_water_mark else 0.0
+
+    baseline = _fetch_trailing_baseline_snapshot(
+        db, account_id, run_date - timedelta(days=TRAILING_RETURN_WINDOW_DAYS)
+    )
+    if baseline and baseline.get("equity"):
+        baseline_equity = float(baseline["equity"])
+        trailing_return_pct = (equity - baseline_equity) / baseline_equity if baseline_equity else 0.0
+    else:
+        trailing_return_pct = 0.0
+
+    open_positions_count, unrealized_pnl = _fetch_open_positions_state(db, account_id)
+
+    row = {
+        "account_id": account_id,
+        "run_id": run_id,
+        "snapshot_date": run_date.isoformat(),
+        "equity": equity,
+        "cash": cash,
+        "open_positions_count": open_positions_count,
+        "unrealized_pnl": unrealized_pnl,
+        "high_water_mark": high_water_mark,
+        "drawdown_from_high_pct": drawdown_from_high_pct,
+        "trailing_return_pct": trailing_return_pct,
+    }
+    db.table("portfolio_snapshots").insert(row).execute()
+    return row
+
+
 def run_nightly_ingest(
     *,
     db=None,
@@ -234,21 +333,35 @@ def run_nightly_ingest(
     fundamentals_adapter: FmpFundamentalsAdapter | None = None,
     news_adapter: FinnhubNewsAdapter | None = None,
     screener: FmpScreenerAdapter | None = None,
+    account_adapter: AlpacaAccountAdapter | None = None,
     now: datetime | None = None,
     refresh_universe_from_screener: bool = True,
     force_pre_reset: bool = False,
 ) -> dict[str, Any]:
     db = db or get_client()
     now = now or datetime.now(UTC)
-    
+    run_date = now.date()
+
+    run_id = _create_pipeline_run(db, run_date)
+
     # ── FMP Quota Guard ────────────────────────────────────────────────
     should_proceed, guard_reason = check_fmp_quota_guard(now=now, force_override=force_pre_reset)
-    
+
     if not should_proceed:
         # Pre-reset: return clean no-op instead of making API calls
         logger.info("FMP quota guard: exiting early, reason=%s", guard_reason)
+        _update_pipeline_run(db, run_id, status="skipped", completed_at=now.isoformat())
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="nightly_ingest_skipped",
+            entity="pipeline_runs",
+            entity_id=run_id,
+            payload={"run_id": run_id, "reason": guard_reason},
+        )
         return {
             "status": guard_reason,
+            "run_id": run_id,
             "symbols": 0,
             "screened_symbols": 0,
             "universe_refresh_status": "skipped_pre_reset_window",
@@ -258,121 +371,172 @@ def run_nightly_ingest(
             "news_rows": 0,
             "failures": [],
         }
-    
-    prices_adapter = prices_adapter or AlpacaPricesAdapter(db=db)
-    fundamentals_adapter = fundamentals_adapter or FmpFundamentalsAdapter(db=db)
-    news_adapter = news_adapter or FinnhubNewsAdapter(db=db)
-    screener = screener or FmpScreenerAdapter()
 
-    # ── Universe refresh via FMP screener ─────────────────────────────────
-    if refresh_universe_from_screener:
-        universe_refresh = refresh_universe(db, settings.strategy_id, screener)
-        symbols = universe_refresh["symbols"]
-    else:
-        existing_symbols = load_universe(db, settings.strategy_id)
-        universe_refresh = {
-            "symbols": existing_symbols,
-            "status": "existing_universe_only",
-            "requested_top_n": settings.screener_top_n,
-            "screened_count": len(existing_symbols),
+    try:
+        # ── Load strategy config from DB (no hardcoded thresholds) ────────
+        strategy_params = get_strategy_params(settings.strategy_id, db=db)
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="run_started",
+            entity="pipeline_runs",
+            entity_id=run_id,
+            payload={
+                "run_id": run_id,
+                "strategy_id": settings.strategy_id,
+                "shortlist_size": strategy_params.shortlist_size,
+                "max_concurrent_positions": strategy_params.max_concurrent_positions,
+            },
+        )
+
+        prices_adapter = prices_adapter or AlpacaPricesAdapter(db=db)
+        fundamentals_adapter = fundamentals_adapter or FmpFundamentalsAdapter(db=db)
+        news_adapter = news_adapter or FinnhubNewsAdapter(db=db)
+        screener = screener or FmpScreenerAdapter()
+        account_adapter = account_adapter or AlpacaAccountAdapter()
+
+        # ── Universe refresh via FMP screener ─────────────────────────────
+        if refresh_universe_from_screener:
+            universe_refresh = refresh_universe(db, settings.strategy_id, screener)
+            symbols = universe_refresh["symbols"]
+        else:
+            existing_symbols = load_universe(db, settings.strategy_id)
+            universe_refresh = {
+                "symbols": existing_symbols,
+                "status": "existing_universe_only",
+                "requested_top_n": settings.screener_top_n,
+                "screened_count": len(existing_symbols),
+            }
+            symbols = existing_symbols
+
+        if not symbols:
+            raise RuntimeError("Universe is empty for configured strategy")
+
+        refresh_symbols = _select_fundamental_refresh_symbols(
+            db,
+            symbols,
+            settings.fundamentals_refresh_limit,
+        )
+
+        summary: dict[str, Any] = {
+            "status": guard_reason,
+            "run_id": run_id,
+            "symbols": len(symbols),
+            "screened_symbols": universe_refresh.get("screened_count", len(symbols)),
+            "universe_refresh_status": universe_refresh.get("status"),
+            "fundamental_targets": len(refresh_symbols),
+            "price_rows": 0,
+            "fundamental_rows": 0,
+            "news_rows": 0,
+            "failures": [],
         }
-        symbols = existing_symbols
 
-    if not symbols:
-        raise RuntimeError("Universe is empty for configured strategy")
+        # ── Price bars (include SPY as benchmark) ─────────────────────────
+        price_start = now.date() - timedelta(days=settings.price_history_lookback_days)
+        price_end = now.date()
+        all_price_symbols = list(dict.fromkeys(symbols + ["SPY"]))  # SPY for market regime + beta
 
-    refresh_symbols = _select_fundamental_refresh_symbols(
-        db,
-        symbols,
-        settings.fundamentals_refresh_limit,
-    )
+        bars = prices_adapter.fetch_daily_bars(all_price_symbols, start=price_start, end=price_end)
+        summary["price_rows"] = prices_adapter.save_bars(bars)
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="ingest_prices",
+            entity="price_bars",
+            payload={
+                "run_id": run_id,
+                "symbols": all_price_symbols,
+                "row_count": summary["price_rows"],
+                "start": price_start.isoformat(),
+                "end": price_end.isoformat(),
+            },
+        )
 
-    summary: dict[str, Any] = {
-        "status": guard_reason,
-        "symbols": len(symbols),
-        "screened_symbols": universe_refresh.get("screened_count", len(symbols)),
-        "universe_refresh_status": universe_refresh.get("status"),
-        "fundamental_targets": len(refresh_symbols),
-        "price_rows": 0,
-        "fundamental_rows": 0,
-        "news_rows": 0,
-        "failures": [],
-    }
+        # ── Fundamentals (extended: cash-flow + balance-sheet) ────────────
+        fundamental_rows = 0
+        for symbol in refresh_symbols:
+            try:
+                fundamentals_adapter.sync_symbol(symbol)
+                fundamental_rows += 1
+            except Exception as exc:
+                logger.exception("Fundamentals ingest failed for %s", symbol)
+                summary["failures"].append({"stage": "fundamentals", "symbol": symbol, "error": str(exc)})
 
-    # ── Price bars (include SPY as benchmark) ─────────────────────────────
-    price_start = now.date() - timedelta(days=settings.price_history_lookback_days)
-    price_end = now.date()
-    all_price_symbols = list(dict.fromkeys(symbols + ["SPY"]))  # SPY for market regime + beta
+        summary["fundamental_rows"] = fundamental_rows
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="ingest_fundamentals",
+            entity="fundamentals",
+            payload={
+                "run_id": run_id,
+                "row_count": fundamental_rows,
+                "refresh_targets": refresh_symbols,
+                "failures": [f for f in summary["failures"] if f["stage"] == "fundamentals"],
+            },
+        )
 
-    bars = prices_adapter.fetch_daily_bars(all_price_symbols, start=price_start, end=price_end)
-    summary["price_rows"] = prices_adapter.save_bars(bars)
-    write_audit_log(
-        db,
-        actor="github-actions",
-        action="ingest_prices",
-        entity="price_bars",
-        payload={
-            "symbols": all_price_symbols,
-            "row_count": summary["price_rows"],
-            "start": price_start.isoformat(),
-            "end": price_end.isoformat(),
-        },
-    )
+        # ── News ──────────────────────────────────────────────────────────
+        news_rows = 0
+        news_start = _news_lookback_start(now.date())
+        for symbol in symbols:
+            try:
+                articles = news_adapter.fetch_news(symbol, start=news_start, end=now.date())
+                news_rows += news_adapter.save_articles(articles)
+            except Exception as exc:
+                logger.exception("News ingest failed for %s", symbol)
+                summary["failures"].append({"stage": "news", "symbol": symbol, "error": str(exc)})
 
-    # ── Fundamentals (extended: cash-flow + balance-sheet) ────────────────
-    fundamental_rows = 0
-    for symbol in refresh_symbols:
-        try:
-            fundamentals_adapter.sync_symbol(symbol)
-            fundamental_rows += 1
-        except Exception as exc:
-            logger.exception("Fundamentals ingest failed for %s", symbol)
-            summary["failures"].append({"stage": "fundamentals", "symbol": symbol, "error": str(exc)})
+        summary["news_rows"] = news_rows
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="ingest_news",
+            entity="news_articles",
+            payload={
+                "run_id": run_id,
+                "row_count": news_rows,
+                "from": news_start.isoformat(),
+                "to": now.date().isoformat(),
+                "failures": [f for f in summary["failures"] if f["stage"] == "news"],
+            },
+        )
 
-    summary["fundamental_rows"] = fundamental_rows
-    write_audit_log(
-        db,
-        actor="github-actions",
-        action="ingest_fundamentals",
-        entity="fundamentals",
-        payload={
-            "row_count": fundamental_rows,
-            "refresh_targets": refresh_symbols,
-            "failures": [f for f in summary["failures"] if f["stage"] == "fundamentals"],
-        },
-    )
+        if refresh_symbols and summary["fundamental_rows"] == 0:
+            raise RuntimeError("Nightly ingest failed: no fundamentals were ingested")
 
-    # ── News ──────────────────────────────────────────────────────────────
-    news_rows = 0
-    news_start = _news_lookback_start(now.date())
-    for symbol in symbols:
-        try:
-            articles = news_adapter.fetch_news(symbol, start=news_start, end=now.date())
-            news_rows += news_adapter.save_articles(articles)
-        except Exception as exc:
-            logger.exception("News ingest failed for %s", symbol)
-            summary["failures"].append({"stage": "news", "symbol": symbol, "error": str(exc)})
+        # ── Portfolio snapshot (equity/drawdown time series) ───────────────
+        account = account_adapter.get_account()
+        summary["portfolio_snapshot"] = _write_portfolio_snapshot(
+            db, run_id=run_id, run_date=run_date, account=account
+        )
 
-    summary["news_rows"] = news_rows
-    write_audit_log(
-        db,
-        actor="github-actions",
-        action="ingest_news",
-        entity="news_articles",
-        payload={
-            "row_count": news_rows,
-            "from": news_start.isoformat(),
-            "to": now.date().isoformat(),
-            "failures": [f for f in summary["failures"] if f["stage"] == "news"],
-        },
-    )
+        logger.info("Nightly ingest summary: %s", summary)
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="nightly_ingest_summary",
+            entity="pipeline_runs",
+            entity_id=run_id,
+            payload={**summary, "run_id": run_id},
+        )
 
-    if refresh_symbols and summary["fundamental_rows"] == 0:
-        raise RuntimeError("Nightly ingest failed: no fundamentals were ingested")
+        _update_pipeline_run(db, run_id, status="completed", completed_at=now.isoformat())
+        summary["status"] = guard_reason
+        return summary
 
-    logger.info("Nightly ingest summary: %s", summary)
-    summary["status"] = guard_reason
-    return summary
+    except Exception as exc:
+        logger.exception("Nightly ingest failed, marking pipeline_runs as failed")
+        _update_pipeline_run(db, run_id, status="failed", completed_at=now.isoformat())
+        write_audit_log(
+            db,
+            actor="github-actions",
+            action="nightly_ingest_failed",
+            entity="pipeline_runs",
+            entity_id=run_id,
+            payload={"run_id": run_id, "error": str(exc)},
+        )
+        raise
 
 
 def main() -> None:
