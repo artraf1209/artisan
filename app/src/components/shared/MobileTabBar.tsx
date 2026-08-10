@@ -2,31 +2,28 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BarChart3, TrendingUp, ClipboardCheck, Newspaper, Target } from 'lucide-react'
+import { ClipboardCheck, LayoutDashboard, Newspaper, Settings2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-// /signals and /logs were retired (both queried tables dropped by the v2
-// migration and were already broken/orphaned) — see tasks/v3-02.
-const nav = [
-  { href: '/dashboard', label: 'Home', icon: BarChart3 },
-  { href: '/orders', label: 'Orders', icon: TrendingUp },
-  { href: '/trades/queue', label: 'Queue', icon: ClipboardCheck },
-  { href: '/briefings', label: 'Briefings', icon: Newspaper },
-  { href: '/strategy', label: 'Strategy', icon: Target },
-]
+const NAV = [
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/recommendations', label: 'Recs', icon: ClipboardCheck },
+  { href: '/briefing', label: 'Briefing', icon: Newspaper },
+  { href: '/strategy', label: 'Strategy', icon: Settings2 },
+] as const
 
-export default function Navbar() {
+/** Exactly 4 items, mobile only (<640px) — Sidebar takes over from there. */
+export default function MobileTabBar() {
   const pathname = usePathname()
 
   return (
     <nav
       aria-label="Primary"
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-50 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-4"
+      className="pointer-events-none fixed inset-x-0 bottom-0 z-50 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-4 sm:hidden"
     >
       <div className="mx-auto flex max-w-xl items-center justify-between gap-2 rounded-[1.75rem] border border-border/80 bg-[#0e0e13]/88 px-3 py-3 shadow-[0_20px_50px_rgba(0,0,0,0.55)] backdrop-blur-2xl pointer-events-auto">
-        {nav.map(({ href, label, icon: Icon }) => {
+        {NAV.map(({ href, label, icon: Icon }) => {
           const active = pathname === href || pathname.startsWith(`${href}/`)
-
           return (
             <Link
               key={href}

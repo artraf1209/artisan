@@ -1,9 +1,13 @@
-const CACHE_NAME = 'artisan-pwa-v1'
+const CACHE_NAME = 'artisan-pwa-v2'
+// '/trades' was never a real route (only '/trades/queue' and
+// '/trades/notes/[id]' are) — cache.addAll() fails atomically on that 404,
+// which was silently breaking install. '/signals' was retired (see v3-02).
 const APP_SHELL = [
   '/',
   '/dashboard',
-  '/trades',
-  '/signals',
+  '/recommendations',
+  '/briefing',
+  '/strategy',
   '/briefings',
   '/trades/queue',
   '/offline',
