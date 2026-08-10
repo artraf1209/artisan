@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-import sys
 from typing import Any
 
 from artisan.db.client import get_client
+from artisan.jobs.common import pipeline_job
 
 logger = logging.getLogger(__name__)
 
@@ -40,24 +40,20 @@ def run_expire_stale(*, db=None, current_run_id: str) -> dict[str, Any]:
     }
 
 
-def _resolve_current_run_id(db) -> str:
-    rows = (
-        db.table("pipeline_runs")
-        .select("id")
-        .order("started_at", desc=True)
-        .limit(1)
-        .execute()
-        .data
-    )
-    if not rows:
-        raise RuntimeError("No pipeline_runs row found; cannot determine current run_id")
-    return rows[0]["id"]
-
-
 def main() -> None:
-    db = get_client()
-    run_id = sys.argv[1] if len(sys.argv) > 1 else _resolve_current_run_id(db)
-    run_expire_stale(db=db, current_run_id=run_id)
+    with pipeline_job("expire_stale") as (db, run_id):
+        result = run_expire_stale(db=db, current_run_id=run_id)
+        # Persisted so briefing.py (a separate process/job later in the chain)
+        # can report accurate "expired unreviewed from the prior run" counts.
+        db.table("audit_log").insert(
+            {
+                "actor": "github-actions",
+                "action": "expire_stale",
+                "entity": "pipeline_runs",
+                "entity_id": run_id,
+                "payload": {"run_id": run_id, **result},
+            }
+        ).execute()
 
 
 if __name__ == "__main__":

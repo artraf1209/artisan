@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pandas as pd
+
+from artisan.config import settings
+from artisan.db.client import fetch_all_pages
+from artisan.jobs.common import pipeline_job
+from artisan.scorers.factor_composite import score_universe
+from artisan.scorers.technical import TechnicalScorer
+from artisan.scoring.regime import classify_regime
+from artisan.strategy_params import StrategyParams, get_strategy_params
+from artisan.timing.entry_gates import compute_performance_multiplier, evaluate_entry
+
+logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
+logger = logging.getLogger(__name__)
+
+REGIME_LOOKBACK_DAYS = 400  # >252 trading days with a buffer for weekends/holidays
+
+
+def _load_spy_bars(db: Any) -> pd.DataFrame:
+    since = (datetime.now(UTC).date() - timedelta(days=REGIME_LOOKBACK_DAYS)).isoformat()
+    rows = fetch_all_pages(
+        lambda: db.table("price_bars")
+        .select("symbol,bar_time,open,high,low,close,volume")
+        .eq("symbol", "SPY")
+        .gte("bar_time", since)
+        .order("bar_time")
+    )
+    return pd.DataFrame(rows)
+
+
+def _load_active_universe(db: Any, strategy_id: str) -> list[str]:
+    rows = fetch_all_pages(
+        lambda: db.table("universes")
+        .select("symbol")
+        .eq("strategy_id", strategy_id)
+        .eq("active", True)
+        .order("symbol")
+    )
+    return [r["symbol"] for r in rows]
+
+
+def _load_price_wide_close(db: Any, symbols: list[str]) -> tuple[pd.DataFrame, pd.Series]:
+    since = (datetime.now(UTC).date() - timedelta(days=settings.price_history_lookback_days)).isoformat()
+    rows = fetch_all_pages(
+        lambda: db.table("price_bars")
+        .select("symbol,bar_time,close")
+        .in_("symbol", symbols + ["SPY"])
+        .gte("bar_time", since)
+        .order("bar_time")
+    )
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(), pd.Series(dtype=float)
+    df["bar_time"] = pd.to_datetime(df["bar_time"])
+    wide = df.pivot_table(index="bar_time", columns="symbol", values="close").sort_index()
+    spy_series = wide.pop("SPY") if "SPY" in wide.columns else pd.Series(dtype=float)
+    return wide, spy_series
+
+
+def _load_fundamentals(db: Any, symbols: list[str]) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    rows = fetch_all_pages(
+        lambda: db.table("fundamentals").select("*").in_("symbol", symbols).order("period_end", desc=True)
+    )
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_symbol.setdefault(row["symbol"], []).append(row)
+    fundamentals = [rows_[0] for rows_ in by_symbol.values() if rows_]
+    income_history = {sym: rows_[1:5] for sym, rows_ in by_symbol.items()}
+    return fundamentals, income_history
+
+
+def _load_sectors(db: Any, symbols: list[str]) -> dict[str, str]:
+    rows = fetch_all_pages(lambda: db.table("assets").select("symbol,sector").in_("symbol", symbols))
+    sectors = {r["symbol"]: r["sector"] or "Unknown" for r in rows}
+    for sym in symbols:
+        sectors.setdefault(sym, "Unknown")
+    return sectors
+
+
+def _load_latest_drawdown(db: Any) -> float | None:
+    rows = (
+        db.table("portfolio_snapshots")
+        .select("drawdown_from_high_pct")
+        .order("snapshot_date", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0]["drawdown_from_high_pct"] if rows else None
+
+
+def run_regime_step(db: Any, run_id: str) -> str:
+    spy_bars = _load_spy_bars(db)
+    result = classify_regime(spy_bars)
+    db.table("regime_snapshots").insert(
+        {
+            "run_id": run_id,
+            "date": datetime.now(UTC).date().isoformat(),
+            "regime": result["regime"],
+            "spy_close": result["spy_close"],
+            "spy_sma50": result["spy_sma50"],
+            "spy_sma200": result["spy_sma200"],
+            "spy_adx14": result["spy_adx14"],
+            "spy_vol_20d_annualized": result["spy_vol_20d_annualized"],
+            "spy_vol_percentile_252d": result["spy_vol_percentile_252d"],
+            "spy_drawdown_from_high_pct": result["spy_drawdown_from_high_pct"],
+        }
+    ).execute()
+    db.table("pipeline_runs").update({"market_regime": result["regime"]}).eq("id", run_id).execute()
+    logger.info("score: regime=%s", result["regime"])
+    return result["regime"]
+
+
+def run_factor_scoring_step(
+    db: Any, *, run_id: str, strategy_id: str, strategy_params: StrategyParams
+) -> list[dict[str, Any]]:
+    symbols = _load_active_universe(db, strategy_id)
+    if not symbols:
+        raise RuntimeError("score: active universe is empty for configured strategy")
+
+    price_df, spy_series = _load_price_wide_close(db, symbols)
+    fundamentals, income_history = _load_fundamentals(db, symbols)
+    sectors = _load_sectors(db, symbols)
+
+    results = score_universe(
+        db=db,
+        strategy_id=strategy_id,
+        strategy_params=strategy_params,
+        run_id=run_id,
+        fundamentals=fundamentals,
+        income_history=income_history,
+        price_df=price_df,
+        spy_series=spy_series,
+        sectors=sectors,
+    )
+    logger.info("score: factor_scores written for %d symbols", len(results))
+    return results
+
+
+def run_entry_gates_step(
+    db: Any,
+    *,
+    run_id: str,
+    strategy_id: str,
+    strategy_params: StrategyParams,
+    regime: str,
+    factor_results: list[dict[str, Any]],
+    spy_df: pd.DataFrame,
+    capital: float,
+) -> list[dict[str, Any]]:
+    """Only the shortlist (top shortlist_size by rank) gets gate-evaluated and
+    an indicator_values snapshot -- the rest of the universe stops at factor_scores."""
+    shortlist = sorted(
+        (r for r in factor_results if r.get("rank") is not None),
+        key=lambda r: r["rank"],
+    )[: strategy_params.shortlist_size]
+
+    drawdown = _load_latest_drawdown(db)
+    performance_multiplier = compute_performance_multiplier(drawdown, strategy_params)
+
+    technical_scorer = TechnicalScorer(db=db)
+    rows: list[dict[str, Any]] = []
+    for candidate in shortlist:
+        symbol = candidate["symbol"]
+        indicator_result = technical_scorer.score_symbol(symbol)
+        snapshot = indicator_result["_snapshot"]
+        snapshot.setdefault("close", indicator_result.get("close"))
+
+        row = evaluate_entry(
+            symbol=symbol,
+            snapshot=snapshot,
+            spy_df=spy_df,
+            capital=capital,
+            strategy_id=strategy_id,
+            run_id=run_id,
+            regime=regime,
+            strategy_params=strategy_params,
+            performance_multiplier=performance_multiplier,
+        )
+        db.table("entry_signals").insert(row).execute()
+        rows.append(row)
+
+    logger.info(
+        "score: entry_signals written for %d shortlisted symbols (%d actionable)",
+        len(rows), sum(1 for r in rows if r["actionable"]),
+    )
+    return rows
+
+
+def run_score(*, db: Any, run_id: str, strategy_id: str) -> dict[str, Any]:
+    strategy_params = get_strategy_params(strategy_id, db=db)
+
+    regime = run_regime_step(db, run_id)
+    spy_df = _load_spy_bars(db)
+    factor_results = run_factor_scoring_step(db, run_id=run_id, strategy_id=strategy_id, strategy_params=strategy_params)
+
+    equity_rows = db.table("portfolio_snapshots").select("equity").order("snapshot_date", desc=True).limit(1).execute().data
+    capital = equity_rows[0]["equity"] if equity_rows else 0.0
+
+    entry_rows = run_entry_gates_step(
+        db, run_id=run_id, strategy_id=strategy_id, strategy_params=strategy_params,
+        regime=regime, factor_results=factor_results, spy_df=spy_df, capital=capital,
+    )
+
+    return {"regime": regime, "factor_scores": len(factor_results), "entry_signals": len(entry_rows)}
+
+
+def main() -> None:
+    with pipeline_job("score") as (db, run_id):
+        run_score(db=db, run_id=run_id, strategy_id=settings.strategy_id)
+
+
+if __name__ == "__main__":
+    main()

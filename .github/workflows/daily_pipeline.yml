@@ -1,0 +1,130 @@
+name: Daily Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Nightly Ingest"]
+    types: [completed]
+  workflow_dispatch: {}
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+  ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+  FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+  FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  STRATEGY_ID: ${{ secrets.STRATEGY_ID }}
+  ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
+  ADMIN_USER_ID: ${{ secrets.ADMIN_USER_ID }}
+  LOG_LEVEL: INFO
+
+jobs:
+  score:
+    name: Regime + factor scoring + entry gates
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run score
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.score
+
+  track_outcomes:
+    name: Track decision outcomes
+    needs: score
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run track_outcomes
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.track_outcomes
+
+  expire_stale:
+    name: Expire stale queue items
+    needs: track_outcomes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run expire_stale
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.expire_stale
+
+  review_positions:
+    name: Position Review agent
+    needs: expire_stale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run review_positions
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.review_positions
+
+  synthesize:
+    name: Analyst agents + Synthesis agent
+    needs: review_positions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run synthesize
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.synthesize
+
+  briefing:
+    name: Daily Briefing agent + Telegram push
+    needs: synthesize
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        working-directory: engine-py
+        run: uv sync
+      - name: Run briefing
+        working-directory: engine-py
+        run: uv run python -m artisan.jobs.briefing

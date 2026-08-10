@@ -521,7 +521,10 @@ def run_nightly_ingest(
             payload={**summary, "run_id": run_id},
         )
 
-        _update_pipeline_run(db, run_id, status="completed", completed_at=now.isoformat())
+        # "ingested", not "completed": the daily_pipeline.yml chain (v2-14) reuses
+        # this same pipeline_runs row through score -> ... -> briefing, so only
+        # briefing.py's success sets the terminal "completed" status.
+        _update_pipeline_run(db, run_id, status="ingested")
         summary["status"] = guard_reason
         return summary
 

@@ -254,10 +254,11 @@ def test_run_nightly_ingest_orchestrates_all_stages() -> None:
     assert prices.saved_rows == [{"symbol": "AAPL"}, {"symbol": "MSFT"}, {"symbol": "SPY"}]
     assert fundamentals.synced == ["AAPL", "MSFT"]
 
-    # pipeline_runs anchoring
+    # pipeline_runs anchoring -- "ingested", not "completed": daily_pipeline.yml
+    # (v2-14) reuses this row through briefing, which owns the terminal status.
     assert summary["run_id"] == FAKE_RUN_ID
-    assert db.pipeline_runs[FAKE_RUN_ID]["status"] == "completed"
-    assert db.pipeline_run_updates[-1]["status"] == "completed"
+    assert db.pipeline_runs[FAKE_RUN_ID]["status"] == "ingested"
+    assert db.pipeline_run_updates[-1]["status"] == "ingested"
 
     # portfolio_snapshots: first run, no prior snapshot -> drawdown 0
     assert len(db.portfolio_snapshots_inserted) == 1

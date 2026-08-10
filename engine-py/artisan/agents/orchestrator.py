@@ -102,5 +102,27 @@ def compute_available_risk_budget(strategy_params: StrategyParams, portfolio_sta
     return max(budget, 0.0)
 
 
+def load_portfolio_state_for_risk(db: Any) -> dict[str, Any]:
+    """Fresh portfolio_state (equity + open positions' dollar_risk/dollar_value)
+    for compute_available_risk_budget(), read directly from the DB. Since
+    review_positions.py (v2-12) persists its trailing-stop/tighten_stop updates
+    to portfolio_positions.stop_price before this is called, a fresh query here
+    naturally reflects the post-review state without needing any cross-process
+    handoff between the two daily_pipeline.yml jobs."""
+    positions = db.table("portfolio_positions").select("symbol,quantity,avg_entry_price,stop_price").execute().data
+    open_positions = []
+    for p in positions:
+        stop = p.get("stop_price")
+        dollar_risk = max((p["avg_entry_price"] - stop) * p["quantity"], 0.0) if stop is not None else None
+        open_positions.append(
+            {"symbol": p["symbol"], "dollar_risk": dollar_risk, "dollar_value": p["avg_entry_price"] * p["quantity"]}
+        )
+
+    snapshot_rows = db.table("portfolio_snapshots").select("equity").order("snapshot_date", desc=True).limit(1).execute().data
+    equity = snapshot_rows[0]["equity"] if snapshot_rows else 0.0
+
+    return {"equity": equity, "open_positions": open_positions}
+
+
 def get_db(db: Any = None) -> Any:
     return db or get_client()

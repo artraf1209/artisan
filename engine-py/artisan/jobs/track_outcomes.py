@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from artisan.db.client import get_client
+from artisan.jobs.common import pipeline_job
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,8 @@ def run_track_outcomes(*, db=None, now: datetime | None = None) -> dict[str, Any
 
 
 def main() -> None:
-    run_track_outcomes()
+    with pipeline_job("track_outcomes") as (db, _run_id):
+        run_track_outcomes(db=db)
 
 
 if __name__ == "__main__":

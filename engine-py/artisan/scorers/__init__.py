@@ -1,13 +1,14 @@
-"""Scoring modules for the Artisan hybrid engine."""
+"""Scoring modules for the Artisan hybrid engine.
 
-from artisan.scorers.composite import CompositeScorer
-from artisan.scorers.fundamental import FundamentalScorer
-from artisan.scorers.sentiment import SentimentScorer
+TechnicalScorer is the one survivor of the legacy 3-pillar scorer set — its
+compute_indicator_snapshot()/save_indicator_values() are genuinely reused by
+v2's score.py to populate indicator_values (composite/fundamental/sentiment
+scorers were fully superseded by the v2 factor suite and AI agents, and are
+deleted alongside this cleanup).
+"""
+
 from artisan.scorers.technical import TechnicalScorer
 
 __all__ = [
-    "CompositeScorer",
-    "FundamentalScorer",
-    "SentimentScorer",
     "TechnicalScorer",
 ]
