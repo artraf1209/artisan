@@ -1,5 +1,6 @@
 export const dynamic = 'force-dynamic'
 
+import { buildActionableShortlistRows } from '@/lib/actionable-shortlist'
 import StatusBadge from '@/components/shared/StatusBadge'
 import { loadLatestCompletedRunContext } from '@/lib/latest-completed-run'
 import { createServerClient } from '@/lib/supabase/server'
@@ -62,6 +63,19 @@ type EntrySignalRow = {
   actionable: boolean
 }
 
+type ShortlistRow = FactorRow & {
+  shortlistRank: number
+  actionable: boolean
+  enterEligible: boolean
+}
+
+type EntryGateRow = EntrySignalRow & {
+  shortlistRank: number
+  factorRank: number | null
+  compositeZ: number | null
+  enterEligible: boolean
+}
+
 function firstValue(value: string | string[] | undefined) {
   if (typeof value === 'string') {
     return value
@@ -95,14 +109,6 @@ function formatSigned(value: number | null) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`
 }
 
-function gateLabel(active: boolean | null, label: string) {
-  if (active == null) {
-    return `${label}: n/a`
-  }
-
-  return `${label}: ${active ? 'on' : 'off'}`
-}
-
 export default async function ShortlistPage({
   searchParams,
 }: {
@@ -127,7 +133,7 @@ export default async function ShortlistPage({
     null
   const latestRegime = (latestRunContext.regime ?? null) as RegimeRow | null
 
-  const shortlistSize = Number(selectedStrategy?.screening_params?.shortlist_size ?? 30)
+  const shortlistSize = Number(selectedStrategy?.screening_params?.shortlist_size ?? 50)
   const cutoff = enterEligibleRankCutoff(latestRegime?.regime ?? 'neutral', shortlistSize)
 
   const [factorRowsData, entryRowsData] =
@@ -142,8 +148,7 @@ export default async function ShortlistPage({
             .eq('run_id', latestRegime.run_id)
             .eq('hard_filter_pass', true)
             .not('rank', 'is', null)
-            .order('rank', { ascending: true })
-            .limit(shortlistSize),
+            .order('rank', { ascending: true }),
           supabase
             .from('entry_signals')
             .select(
@@ -173,14 +178,7 @@ export default async function ShortlistPage({
       hard_filter_pass: Boolean(row.hard_filter_pass),
     } satisfies FactorRow))
 
-  const eligibleSymbols = new Set(
-    factorRows
-      .filter((row) => row.rank != null && row.rank <= cutoff)
-      .map((row) => row.symbol),
-  )
-  const factorBySymbol = new Map(factorRows.map((row) => [row.symbol, row]))
-
-  const entryRows = ((entryRowsData.data ?? []) as Array<Record<string, unknown>>)
+  const rawEntryRows = ((entryRowsData.data ?? []) as Array<Record<string, unknown>>)
     .map((row) => ({
       symbol: String(row.symbol),
       gate_market: row.gate_market as boolean | null,
@@ -194,11 +192,30 @@ export default async function ShortlistPage({
       effective_horizon_days: toNumber(row.effective_horizon_days),
       actionable: Boolean(row.actionable),
     } satisfies EntrySignalRow))
-    .filter((row) => eligibleSymbols.has(row.symbol))
+
+  const shortlistRows = buildActionableShortlistRows(
+    factorRows,
+    rawEntryRows,
+    shortlistSize,
+  ).map((row) => ({
+    ...row,
+    actionable: true,
+    enterEligible: row.shortlistRank <= cutoff,
+  } satisfies ShortlistRow))
+
+  const shortlistBySymbol = new Map(shortlistRows.map((row) => [row.symbol, row]))
+
+  const entryRows = rawEntryRows
+    .filter((row) => shortlistBySymbol.has(row.symbol))
+    .map((row) => ({
+      ...row,
+      shortlistRank: shortlistBySymbol.get(row.symbol)?.shortlistRank ?? Number.MAX_SAFE_INTEGER,
+      factorRank: shortlistBySymbol.get(row.symbol)?.rank ?? null,
+      compositeZ: shortlistBySymbol.get(row.symbol)?.composite_z ?? null,
+      enterEligible: shortlistBySymbol.get(row.symbol)?.enterEligible ?? false,
+    } satisfies EntryGateRow))
     .sort((left, right) => {
-      const leftRank = factorBySymbol.get(left.symbol)?.rank ?? 999
-      const rightRank = factorBySymbol.get(right.symbol)?.rank ?? 999
-      return leftRank - rightRank
+      return left.shortlistRank - right.shortlistRank
     })
 
   return (
@@ -266,25 +283,103 @@ export default async function ShortlistPage({
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">
-              Shortlist + Factor Scores
+              Entry Gates
             </h2>
             <p className="text-sm text-muted-foreground">
-              Latest factor snapshot, sorted by composite score, with delta vs the prior run.
+              Actionable shortlist names with gate status, price levels, and regime eligibility.
             </p>
           </div>
           <p className="text-sm text-muted-foreground">
-            {factorRows.length} rows · shortlist size {shortlistSize}
+            {entryRows.length} actionable symbols
           </p>
         </div>
 
-        {factorRows.length === 0 ? (
-          <EmptyState description="No factor_scores rows were found for the latest pipeline run." />
+        {entryRows.length === 0 ? (
+          <EmptyState description="No actionable entry signals were found for the latest run." />
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-[1100px] w-full text-sm">
+            <table className="min-w-[1250px] w-full text-sm">
               <thead>
                 <tr className="border-b border-border/70 text-left">
-                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Rank</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Shortlist</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Factor rank</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Symbol</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Setup</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Entry</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Stop</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Target</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">R</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Actionable</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">ENTER eligible</th>
+                  <th className="pb-3 text-xs uppercase tracking-[0.16em] text-muted-foreground">Gates</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/30">
+                {entryRows.map((row) => (
+                  <tr key={row.symbol} className="align-top">
+                    <td className="py-4 pr-4 font-semibold text-foreground">{row.shortlistRank}</td>
+                    <td className="py-4 pr-4 text-muted-foreground">{row.factorRank ?? 'N/A'}</td>
+                    <td className="py-4 pr-4">
+                      <div className="space-y-1">
+                        <p className="font-semibold text-foreground">{row.symbol}</p>
+                        <p className="text-xs text-muted-foreground">
+                          composite {formatSigned(row.compositeZ)}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="py-4 pr-4 text-muted-foreground">{row.setup_type ?? 'N/A'}</td>
+                    <td className="py-4 pr-4 text-muted-foreground">{formatCurrency(row.entry_price)}</td>
+                    <td className="py-4 pr-4 text-muted-foreground">{formatCurrency(row.stop_price)}</td>
+                    <td className="py-4 pr-4 text-muted-foreground">{formatCurrency(row.target_price)}</td>
+                    <td className="py-4 pr-4 text-muted-foreground">
+                      {row.r_multiple != null ? `${row.r_multiple.toFixed(2)}R` : 'N/A'}
+                    </td>
+                    <td className="py-4 pr-4">
+                      <StatusBadge status={row.actionable ? 'approved' : 'pending'} />
+                    </td>
+                    <td className="py-4 pr-4">
+                      <StatusBadge status={row.enterEligible ? 'approved' : 'pending'} />
+                    </td>
+                    <td className="py-4">
+                      <div className="flex flex-wrap gap-2">
+                        <GatePill active={row.gate_market} label="Market" />
+                        <GatePill active={row.gate_trend} label="Trend" />
+                        <GatePill active={Boolean(row.setup_type)} label="Setup" />
+                        <GatePill active={row.gate_confirmed} label="Confirm" />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-[1.5rem] border border-border bg-card/95 p-5 shadow-[0_20px_45px_rgba(0,0,0,0.22)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">
+              Shortlist + Factor Scores
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Top actionable shortlist rows, ranked by composite score, with factor deltas vs the prior run.
+            </p>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {shortlistRows.length} rows · shortlist size {shortlistSize}
+          </p>
+        </div>
+
+        {shortlistRows.length === 0 ? (
+          <EmptyState description="No actionable shortlist rows were found for the latest pipeline run." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-[1200px] w-full text-sm">
+              <thead>
+                <tr className="border-b border-border/70 text-left">
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Shortlist</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Factor rank</th>
                   <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Symbol</th>
                   <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Sector</th>
                   <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Value</th>
@@ -294,13 +389,15 @@ export default async function ShortlistPage({
                   <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Growth</th>
                   <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Composite</th>
                   <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Hard filter</th>
+                  <th className="pb-3 pr-4 text-xs uppercase tracking-[0.16em] text-muted-foreground">Actionable</th>
                   <th className="pb-3 text-xs uppercase tracking-[0.16em] text-muted-foreground">ENTER eligible</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/30">
-                {factorRows.map((row) => (
+                {shortlistRows.map((row) => (
                   <tr key={row.symbol} className="align-top">
-                    <td className="py-4 pr-4 font-semibold text-foreground">{row.rank ?? 'N/A'}</td>
+                    <td className="py-4 pr-4 font-semibold text-foreground">{row.shortlistRank}</td>
+                    <td className="py-4 pr-4 text-muted-foreground">{row.rank ?? 'N/A'}</td>
                     <td className="py-4 pr-4">
                       <div className="space-y-2">
                         <p className="font-semibold text-foreground">{row.symbol}</p>
@@ -317,73 +414,16 @@ export default async function ShortlistPage({
                     <td className="py-4 pr-4">
                       <StatusBadge status={row.hard_filter_pass ? 'approved' : 'rejected'} />
                     </td>
+                    <td className="py-4 pr-4">
+                      <StatusBadge status={row.actionable ? 'approved' : 'pending'} />
+                    </td>
                     <td className="py-4">
-                      <StatusBadge
-                        status={row.rank != null && row.rank <= cutoff ? 'approved' : 'pending'}
-                      />
+                      <StatusBadge status={row.enterEligible ? 'approved' : 'pending'} />
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </section>
-
-      <section className="rounded-[1.5rem] border border-border bg-card/95 p-5 shadow-[0_20px_45px_rgba(0,0,0,0.22)]">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">
-              Entry Gates
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Only the current regime&apos;s ENTER-eligible names appear here.
-            </p>
-          </div>
-          <p className="text-sm text-muted-foreground">{entryRows.length} eligible symbols</p>
-        </div>
-
-        {entryRows.length === 0 ? (
-          <EmptyState description="No ENTER-eligible entry signals were found for the latest run." />
-        ) : (
-          <div className="space-y-4">
-            {entryRows.map((row) => (
-              <article key={row.symbol} className="rounded-[1.25rem] border border-border bg-background/35 p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-xl font-semibold tracking-[-0.03em] text-foreground">
-                        {row.symbol}
-                      </h3>
-                      <StatusBadge status={row.actionable ? 'approved' : 'pending'} />
-                    </div>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      Rank {factorBySymbol.get(row.symbol)?.rank ?? 'N/A'} · setup {row.setup_type ?? 'N/A'}
-                    </p>
-                  </div>
-
-                  <div className="grid min-w-full grid-cols-2 gap-3 sm:min-w-[25rem] sm:grid-cols-4">
-                    <Metric label="Entry" value={formatCurrency(row.entry_price)} />
-                    <Metric label="Stop" value={formatCurrency(row.stop_price)} />
-                    <Metric label="Target" value={formatCurrency(row.target_price)} />
-                    <Metric label="R multiple" value={row.r_multiple != null ? `${row.r_multiple.toFixed(2)}R` : 'N/A'} />
-                  </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <GatePill active={row.gate_market} label="Market" />
-                  <GatePill active={row.gate_trend} label="Trend" />
-                  <GatePill active={Boolean(row.setup_type)} label="Setup" />
-                  <GatePill active={row.gate_confirmed} label="Confirm" />
-                </div>
-
-                <div className="mt-4 text-sm text-muted-foreground">
-                  {gateLabel(row.gate_market, 'Market')} · {gateLabel(row.gate_trend, 'Trend')} ·{' '}
-                  {gateLabel(Boolean(row.setup_type), 'Setup')} · {gateLabel(row.gate_confirmed, 'Confirm')} · horizon{' '}
-                  {row.effective_horizon_days ?? 'N/A'}d
-                </div>
-              </article>
-            ))}
           </div>
         )}
       </section>

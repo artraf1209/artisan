@@ -134,6 +134,7 @@ async def test_happy_path_writes_recommendations_and_shadow_outcomes(monkeypatch
     # cutoff for risk_on with a 3-symbol shortlist -> round(3*0.10)=0 -> max(1,0)=1
     # so only AAPL (rank 1) is enter-eligible; MSFT/TSLA fall to watch-eligible.
     db = FakeDB(_base_tables())
+    narrow_params = replace(strategy_params, shortlist_size=3)
     output = {
         "recommendations": [
             {**VALID_RECOMMENDATION, "symbol": "AAPL"},
@@ -147,7 +148,7 @@ async def test_happy_path_writes_recommendations_and_shadow_outcomes(monkeypatch
     )
 
     result = await synthesis.synthesize(
-        run_id="run-1", strategy_id="strategy-1", strategy_params=strategy_params,
+        run_id="run-1", strategy_id="strategy-1", strategy_params=narrow_params,
         available_risk_budget=1000.0, db=db, client=object(),
     )
 
@@ -284,12 +285,13 @@ async def test_missing_field_raises(monkeypatch, strategy_params) -> None:
 @pytest.mark.asyncio
 async def test_reports_missing_decision_history_lookup_for_enter_candidate(monkeypatch, strategy_params) -> None:
     db = FakeDB(_base_tables())
+    narrow_params = replace(strategy_params, shortlist_size=3)
     output = {"recommendations": [{**VALID_RECOMMENDATION, "symbol": "AAPL"}]}
     # no query_decision_history call at all in the transcript
     monkeypatch.setattr(synthesis, "run_agent", lambda *a, **k: _run_agent_result(output, tool_calls=[]))
 
     result = await synthesis.synthesize(
-        run_id="run-1", strategy_id="strategy-1", strategy_params=strategy_params,
+        run_id="run-1", strategy_id="strategy-1", strategy_params=narrow_params,
         available_risk_budget=1000.0, db=db, client=object(),
     )
 

@@ -126,7 +126,7 @@ export const DEFAULT_STRATEGY_SETTINGS: StrategySettingsValues = {
     max_drawdown_tolerance_pct: 0.18,
   },
   screening_params: {
-    shortlist_size: 30,
+    shortlist_size: 50,
     daily_recommendation_cap: 10,
     factor_weights: {
       value: 0.25,

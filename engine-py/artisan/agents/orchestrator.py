@@ -61,9 +61,8 @@ async def run_analysts_for_shortlist(
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Runs the given analyst coroutines (keyed by agent_type, e.g.
     {"fundamental": fundamental_analyst.analyze, "technical": ..., "sentiment": ...})
-    across every shortlisted symbol concurrently, bounded by a semaphore so we
-    never exceed max_concurrency simultaneous Anthropic calls (up to 3 analysts x
-    a ~30-symbol shortlist = up to 90 calls per run).
+    across every actionable shortlisted symbol concurrently, bounded by a semaphore
+    so we never exceed max_concurrency simultaneous Anthropic calls.
 
     Returns {symbol: {agent_type: <that agent's parsed output dict>}}.
     """

@@ -232,20 +232,23 @@ def run_entry_gates_step(
     capital: float,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Only the shortlist (top shortlist_size by rank) gets gate-evaluated and
-    an indicator_values snapshot -- the rest of the universe stops at factor_scores."""
+    """Every hard-filter-passing ranked symbol gets gate-evaluated so actionable
+    status is available across the full candidate set before shortlist selection."""
     now = now or datetime.now(UTC)
-    shortlist = sorted(
-        (r for r in factor_results if r.get("rank") is not None),
+    candidates = sorted(
+        (
+            r for r in factor_results
+            if r.get("hard_filter_pass") and r.get("rank") is not None
+        ),
         key=lambda r: r["rank"],
-    )[: strategy_params.shortlist_size]
+    )
 
     drawdown = _load_latest_drawdown(db)
     performance_multiplier = compute_performance_multiplier(drawdown, strategy_params)
 
     technical_scorer = TechnicalScorer(db=db)
     rows: list[dict[str, Any]] = []
-    for candidate in shortlist:
+    for candidate in candidates:
         symbol = candidate["symbol"]
         indicator_result = technical_scorer.score_symbol(symbol)
         snapshot = indicator_result["_snapshot"]
@@ -263,11 +266,11 @@ def run_entry_gates_step(
             performance_multiplier=performance_multiplier,
             evaluated_at=now.isoformat(),
         )
-        db.table("entry_signals").insert(row).execute()
+        db.table("entry_signals").upsert(row, on_conflict="symbol,strategy_id,evaluated_at").execute()
         rows.append(row)
 
     logger.info(
-        "score: entry_signals written for %d shortlisted symbols (%d actionable)",
+        "score: entry_signals written for %d hard-filter candidates (%d actionable)",
         len(rows), sum(1 for r in rows if r["actionable"]),
     )
     return rows

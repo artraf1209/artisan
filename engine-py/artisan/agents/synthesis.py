@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
+from artisan.actionable_shortlist import select_actionable_shortlist_rows
 from artisan.agents.base import (
     QUERY_DECISION_HISTORY_TOOL,
     SUBMIT_RECOMMENDATIONS_TOOL,
@@ -126,6 +127,11 @@ def assemble_context(
         .execute()
         .data
     )
+    shortlisted = select_actionable_shortlist_rows(
+        factor_rows=factor_rows,
+        entry_signal_rows=entry_signal_rows,
+        shortlist_size=strategy_params.shortlist_size,
+    )
     entry_signals_by_symbol = {r["symbol"]: r for r in entry_signal_rows}
 
     analyst_by_symbol = _load_analyst_outputs(db, run_id)
@@ -137,7 +143,7 @@ def assemble_context(
         "open_positions": open_positions,
     }
 
-    cutoff = enter_eligible_rank_cutoff(regime, len(shortlisted))
+    cutoff = enter_eligible_rank_cutoff(regime, strategy_params.shortlist_size)
 
     enter_eligible: list[dict[str, Any]] = []
     watch_eligible: list[dict[str, Any]] = []
@@ -149,14 +155,15 @@ def assemble_context(
             "symbol": symbol,
             "sector": row.get("sector"),
             "composite_z": row.get("composite_z"),
-            "rank": row.get("rank"),
+            "rank": row.get("shortlist_rank"),
+            "factor_rank": row.get("rank"),
             "entry_signal": entry_signal,
             "analyst_outputs": analyst_by_symbol.get(symbol, {}),
             "vetoes": [],
         }
 
         actionable = bool(entry_signal.get("actionable"))
-        within_rank = row.get("rank") is not None and row["rank"] <= cutoff
+        within_rank = row.get("shortlist_rank") is not None and row["shortlist_rank"] <= cutoff
 
         if actionable and within_rank:
             entry_price = entry_signal.get("entry_price")
@@ -195,8 +202,8 @@ def _format_candidate(candidate: dict[str, Any]) -> str:
     entry_signal = candidate["entry_signal"]
     analyst = candidate["analyst_outputs"]
     lines = [
-        f"- {candidate['symbol']} (sector={candidate['sector']}, rank={candidate['rank']}, "
-        f"composite_z={candidate['composite_z']})",
+        f"- {candidate['symbol']} (sector={candidate['sector']}, shortlist_rank={candidate['rank']}, "
+        f"factor_rank={candidate.get('factor_rank')}, composite_z={candidate['composite_z']})",
         f"  setup_type={entry_signal.get('setup_type')} entry={entry_signal.get('entry_price')} "
         f"stop={entry_signal.get('stop_price')} target={entry_signal.get('target_price')} "
         f"effective_horizon_days={entry_signal.get('effective_horizon_days')}",

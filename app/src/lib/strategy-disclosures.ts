@@ -97,10 +97,10 @@ export function buildStrategyGroupDisclosures({
     },
     'screening-shortlisting': {
       summary:
-        'Every factor score is sector-neutralized before the weighted composite rank is computed and clipped to the current shortlist size.',
+        'Every factor score is sector-neutralized first, then entry gates identify actionable names across the hard-pass set before the top actionable shortlist is ranked by composite score.',
       formulaLines: [
         `composite_z = ${config.screening_params.factor_weights.value.toFixed(2)}×Value + ${config.screening_params.factor_weights.quality.toFixed(2)}×Quality + ${config.screening_params.factor_weights.momentum.toFixed(2)}×Momentum + ${config.screening_params.factor_weights.low_vol.toFixed(2)}×LowVol + ${config.screening_params.factor_weights.growth.toFixed(2)}×Growth`,
-        `shortlist = top ${config.screening_params.shortlist_size} ranked symbols, capped at ${config.screening_params.daily_recommendation_cap} new recommendations`,
+        `actionable_shortlist = top ${config.screening_params.shortlist_size} actionable symbols ranked by composite_z, capped at ${config.screening_params.daily_recommendation_cap} new recommendations`,
       ],
       detailsLabel: 'Show factor methodology',
       detailsLines: [

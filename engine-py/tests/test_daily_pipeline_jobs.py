@@ -19,6 +19,8 @@ class _Query:
         self.insert_sink = insert_sink
         self._filters: dict[str, object] = {}
         self._insert_row: dict | None = None
+        self._upsert_row: dict | None = None
+        self._upsert_conflict: tuple[str, ...] = ()
         self._update_fields: dict | None = None
 
     def select(self, _fields: str):
@@ -40,6 +42,11 @@ class _Query:
         self._insert_row = row
         return self
 
+    def upsert(self, row: dict, on_conflict: str):
+        self._upsert_row = row
+        self._upsert_conflict = tuple(part.strip() for part in on_conflict.split(",") if part.strip())
+        return self
+
     def update(self, fields: dict):
         self._update_fields = fields
         return self
@@ -53,6 +60,24 @@ class _Query:
             row.setdefault("id", f"generated-{len(self.insert_sink) if self.insert_sink is not None else 0}")
             if self.insert_sink is not None:
                 self.insert_sink.append(row)
+            return type("Response", (), {"data": [row]})()
+        if self._upsert_row is not None:
+            row = dict(self._upsert_row)
+            existing = next(
+                (
+                    current for current in self.rows
+                    if all(current.get(column) == row.get(column) for column in self._upsert_conflict)
+                ),
+                None,
+            )
+            if existing is not None:
+                existing.update(row)
+                row = existing
+            else:
+                row.setdefault("id", f"generated-{len(self.insert_sink) if self.insert_sink is not None else 0}")
+                self.rows.append(row)
+            if self.insert_sink is not None:
+                self.insert_sink.append(dict(row))
             return type("Response", (), {"data": [row]})()
         matched = [r for r in self.rows if self._matches(r)]
         if self._update_fields is not None:
@@ -343,7 +368,7 @@ def test_run_entry_gates_step_passes_backdated_timestamp(monkeypatch, strategy_p
     assert captured["evaluated_at"] == "2026-08-07T21:05:00+00:00"
 
 
-def test_run_entry_gates_step_only_evaluates_top_shortlist_size_by_rank(monkeypatch, strategy_params) -> None:
+def test_run_entry_gates_step_evaluates_all_ranked_hard_filter_pass_symbols(monkeypatch, strategy_params) -> None:
     from dataclasses import replace
 
     capped_params = replace(strategy_params, shortlist_size=2)
@@ -376,26 +401,89 @@ def test_run_entry_gates_step_only_evaluates_top_shortlist_size_by_rank(monkeypa
         regime="risk_on", factor_results=factor_results, spy_df=None, capital=100_000.0,
     )
 
-    assert evaluated_symbols == ["AAPL", "MSFT"]  # only top 2 by rank, SKIPPED (no rank) excluded
-    assert len(rows) == 2
-    assert len(db.inserts["entry_signals"]) == 2
+    assert evaluated_symbols == ["AAPL", "MSFT", "TSLA"]  # every ranked hard-pass symbol is evaluated
+    assert len(rows) == 3
+    assert len(db.inserts["entry_signals"]) == 3
 
 
-def test_load_shortlist_symbols_sorts_and_truncates() -> None:
+def test_run_entry_gates_step_upserts_existing_entry_signal_for_same_timestamp(monkeypatch, strategy_params) -> None:
+    now = score_job.datetime(2026, 8, 7, 21, 5, tzinfo=score_job.UTC)
     db = FakeDB(
         {
-            "factor_scores": [
-                {"symbol": "C", "rank": 3, "run_id": "run-1", "strategy_id": "strategy-1"},
-                {"symbol": "A", "rank": 1, "run_id": "run-1", "strategy_id": "strategy-1"},
-                {"symbol": "B", "rank": 2, "run_id": "run-1", "strategy_id": "strategy-1"},
-                {"symbol": "UNRANKED", "rank": None, "run_id": "run-1", "strategy_id": "strategy-1"},
-            ]
+            "portfolio_snapshots": [{"drawdown_from_high_pct": -0.02}],
+            "entry_signals": [
+                {
+                    "id": "existing-row",
+                    "symbol": "SNDK",
+                    "strategy_id": "strategy-1",
+                    "run_id": "old-run",
+                    "evaluated_at": now.isoformat(),
+                    "actionable": False,
+                    "setup_type": None,
+                }
+            ],
         }
     )
 
-    symbols = synthesize_job._load_shortlist_symbols(db, "run-1", "strategy-1", shortlist_size=2)
+    class FakeTechnicalScorer:
+        def __init__(self, db):
+            pass
 
-    assert symbols == ["A", "B"]
+        def score_symbol(self, symbol):
+            return {"_snapshot": {"close": 100.0}, "close": 100.0}
+
+    monkeypatch.setattr(score_job, "TechnicalScorer", FakeTechnicalScorer)
+    monkeypatch.setattr(
+        score_job,
+        "evaluate_entry",
+        lambda **kwargs: {
+            "symbol": kwargs["symbol"],
+            "strategy_id": kwargs["strategy_id"],
+            "run_id": kwargs["run_id"],
+            "evaluated_at": kwargs["evaluated_at"],
+            "actionable": True,
+            "setup_type": "breakout",
+        },
+    )
+
+    score_job.run_entry_gates_step(
+        db,
+        run_id="run-1",
+        strategy_id="strategy-1",
+        strategy_params=strategy_params,
+        regime="neutral",
+        factor_results=[{"symbol": "SNDK", "rank": 1, "hard_filter_pass": True}],
+        spy_df=pd.DataFrame(),
+        capital=100_000.0,
+        now=now,
+    )
+
+    assert len(db.table_rows["entry_signals"]) == 1
+    assert db.table_rows["entry_signals"][0]["id"] == "existing-row"
+    assert db.table_rows["entry_signals"][0]["run_id"] == "run-1"
+    assert db.table_rows["entry_signals"][0]["actionable"] is True
+
+
+def test_load_actionable_shortlist_symbols_filters_to_actionable_and_ranks_by_composite() -> None:
+    db = FakeDB(
+        {
+            "factor_scores": [
+                {"symbol": "C", "rank": 3, "composite_z": 1.1, "hard_filter_pass": True, "run_id": "run-1", "strategy_id": "strategy-1"},
+                {"symbol": "A", "rank": 1, "composite_z": 1.5, "hard_filter_pass": True, "run_id": "run-1", "strategy_id": "strategy-1"},
+                {"symbol": "B", "rank": 2, "composite_z": 1.3, "hard_filter_pass": True, "run_id": "run-1", "strategy_id": "strategy-1"},
+                {"symbol": "UNRANKED", "rank": None, "composite_z": None, "hard_filter_pass": False, "run_id": "run-1", "strategy_id": "strategy-1"},
+            ],
+            "entry_signals": [
+                {"symbol": "A", "actionable": True, "run_id": "run-1", "strategy_id": "strategy-1"},
+                {"symbol": "B", "actionable": False, "run_id": "run-1", "strategy_id": "strategy-1"},
+                {"symbol": "C", "actionable": True, "run_id": "run-1", "strategy_id": "strategy-1"},
+            ],
+        }
+    )
+
+    symbols = synthesize_job._load_actionable_shortlist_symbols(db, "run-1", "strategy-1", shortlist_size=2)
+
+    assert symbols == ["A", "C"]
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ VALID_ROW = {
         "max_drawdown_tolerance_pct": 0.18,
     },
     "screening_params": {
-        "shortlist_size": 30,
+        "shortlist_size": 50,
         "daily_recommendation_cap": 10,
         "factor_weights": {"value": 0.25, "quality": 0.25, "momentum": 0.25, "low_vol": 0.10, "growth": 0.15},
     },
