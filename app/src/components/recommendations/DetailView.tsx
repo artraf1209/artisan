@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -10,6 +10,7 @@ import ComputationTrace from '@/components/recommendations/ComputationTrace'
 import AgentReasoningCard from '@/components/recommendations/AgentReasoningCard'
 import SynthesisCard from '@/components/recommendations/SynthesisCard'
 import OutcomePanel from '@/components/recommendations/OutcomePanel'
+import { useRealtimeTable } from '@/lib/hooks/useRealtimeTable'
 import {
   bucketFundamental,
   bucketSentiment,
@@ -27,6 +28,33 @@ export default function DetailView() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const fetchDetail = useCallback((id: string, { showLoading }: { showLoading: boolean }) => {
+    if (showLoading) {
+      setLoading(true)
+      setError(null)
+    }
+
+    return fetch(`/api/recommendations/${id}`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => null)
+        if (!response.ok) {
+          throw new Error(body?.error ?? 'Failed to load recommendation detail.')
+        }
+        setDetail(body as RecommendationDetail)
+        setError(null)
+      })
+      .catch((fetchError) => {
+        if (showLoading) {
+          setError(fetchError instanceof Error ? fetchError.message : 'Failed to load recommendation detail.')
+        }
+      })
+      .finally(() => {
+        if (showLoading) {
+          setLoading(false)
+        }
+      })
+  }, [])
+
   useEffect(() => {
     if (!recommendationId) {
       setDetail(null)
@@ -34,35 +62,19 @@ export default function DetailView() {
       return
     }
 
-    let cancelled = false
-    setLoading(true)
-    setError(null)
+    void fetchDetail(recommendationId, { showLoading: true })
+  }, [recommendationId, fetchDetail])
 
-    fetch(`/api/recommendations/${recommendationId}`)
-      .then(async (response) => {
-        const body = await response.json().catch(() => null)
-        if (!response.ok) {
-          throw new Error(body?.error ?? 'Failed to load recommendation detail.')
-        }
-        if (!cancelled) {
-          setDetail(body as RecommendationDetail)
-        }
-      })
-      .catch((fetchError) => {
-        if (!cancelled) {
-          setError(fetchError instanceof Error ? fetchError.message : 'Failed to load recommendation detail.')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [recommendationId])
+  // Keep an open detail view fresh as execute-trade fills the order or the
+  // nightly outcome tracker resolves it, without reopening the sheet.
+  useRealtimeTable(
+    recommendationId ? ['recommendations', 'trade_executions', 'decision_outcomes'] : [],
+    () => {
+      if (recommendationId) {
+        void fetchDetail(recommendationId, { showLoading: false })
+      }
+    },
+  )
 
   const close = () => {
     const params = new URLSearchParams(searchParams.toString())

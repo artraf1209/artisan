@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import SectionHeader from '@/components/shared/SectionHeader'
 import TabStrip from '@/components/shared/TabStrip'
 import DetailView from '@/components/recommendations/DetailView'
+import RealtimeRefresher from '@/components/recommendations/RealtimeRefresher'
 
 const TABS = [
   { href: '/recommendations', label: 'New Recommendations' },
@@ -19,6 +20,7 @@ export default function RecommendationsLayout({ children }: { children: React.Re
       />
       <TabStrip tabs={TABS} />
       <section className="space-y-5">{children}</section>
+      <RealtimeRefresher />
       <Suspense fallback={null}>
         <DetailView />
       </Suspense>
