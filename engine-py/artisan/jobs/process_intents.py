@@ -52,21 +52,12 @@ class IntentExecutor:
     def execute_intent(self, intent: dict[str, Any]) -> dict[str, Any]:
         """Execute a single trade intent via the execute-trade edge function."""
         intent_id = intent["id"]
-        symbol = intent["symbol"]
-        side = intent["side"]
-        quantity = intent["quantity"]
-        signal_id = intent.get("signal_id")
 
         # Call execute-trade edge function
         response = httpx.post(
             f"{self.supabase_url}/functions/v1/execute-trade",
             json={
-                "intentId": intent_id,
-                "signalId": signal_id,
-                "symbol": symbol,
-                "side": side,
-                "quantity": quantity,
-                "orderType": "market",
+                "trade_intent_id": intent_id,
             },
             headers={
                 "Authorization": f"Bearer {settings.supabase_service_role_key}",
@@ -76,15 +67,15 @@ class IntentExecutor:
 
         result = response.json()
 
-        if not response.is_success or result.get("error"):
+        if not response.is_success or not result.get("success", False):
             error_type = result.get("error_type", "other")
             error_msg = result.get("error", "Unknown error")
             raise RuntimeError(f"{error_type}: {error_msg}")
 
         return {
             "intent_id": intent_id,
-            "symbol": symbol,
-            "status": result.get("trade", {}).get("status", "submitted"),
+            "symbol": intent["symbol"],
+            "status": result.get("status", "submitted"),
             "executed_at": datetime.now(UTC).isoformat(),
         }
 
@@ -116,17 +107,12 @@ class IntentExecutor:
                     
                 processed += 1
                 
-            except httpx.HTTPStatusError as exc:
-                error_text = exc.response.text
+            except Exception as exc:
+                error_text = str(exc)
                 error_type = "other"
-                
-                # Try to parse error_type from response
-                try:
-                    error_data = exc.response.json()
-                    error_type = error_data.get("error_type", "other")
-                except Exception:
-                    pass
-                
+                if ": " in error_text:
+                    error_type = error_text.split(": ", 1)[0]
+
                 if error_type == "market_closed":
                     # Keep as scheduled - will retry on next run
                     market_closed += 1
@@ -156,22 +142,6 @@ class IntentExecutor:
                         intent["symbol"],
                         error_text,
                     )
-            except Exception as exc:
-                self.update_intent_status(intent["id"], "rejected")
-                failed += 1
-                
-                write_audit_log(
-                    self.db,
-                    actor="process-intents",
-                    action="execute_error",
-                    entity="trade_intents",
-                    entity_id=intent["id"],
-                    payload={
-                        "symbol": intent["symbol"],
-                        "error": str(exc),
-                    },
-                )
-                logger.exception("Unexpected error executing %s", intent["symbol"])
 
         summary = {
             "intents_found": len(intents),
