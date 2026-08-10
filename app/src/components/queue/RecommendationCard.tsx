@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useTransition, type HTMLAttributes } from 'react'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { RecommendationQueueItem, SizePreview } from '@/lib/queue'
 import StatusBadge from '@/components/shared/StatusBadge'
@@ -28,6 +28,7 @@ export default function RecommendationCard({
   recommendation: RecommendationQueueItem
 }) {
   const router = useRouter()
+  const pathname = usePathname()
   const [note, setNote] = useState('')
   const [shares, setShares] = useState(recommendation.shares?.toString() ?? '')
   const [stopPrice, setStopPrice] = useState(recommendation.stop_price?.toString() ?? '')
@@ -210,9 +211,13 @@ export default function RecommendationCard({
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-2xl font-semibold tracking-[-0.04em] text-foreground">
+            <button
+              type="button"
+              onClick={() => router.push(`${pathname}?recommendation=${recommendation.id}`, { scroll: false })}
+              className="text-2xl font-semibold tracking-[-0.04em] text-foreground underline decoration-border decoration-2 underline-offset-4 transition hover:decoration-foreground"
+            >
               {recommendation.symbol}
-            </h2>
+            </button>
             <StatusBadge status="enter" />
             {recommendation.conviction ? <StatusBadge status={recommendation.conviction} /> : null}
           </div>
