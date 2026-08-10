@@ -26,6 +26,7 @@ type StrategyConfigRow = {
   } | null
   performance_goals?: {
     benchmark_symbol?: string
+    max_drawdown_tolerance_pct?: number
   } | null
 }
 
@@ -159,7 +160,11 @@ export default async function AccountPage() {
   const strategyConfig = (latestStrategy ?? null) as StrategyConfigRow | null
   const benchmarkSymbol = strategyConfig?.performance_goals?.benchmark_symbol ?? 'SPY'
   const drawdownTolerancePct =
-    Number(strategyConfig?.risk_params?.max_drawdown_tolerance_pct ?? 0.18)
+    Number(
+      strategyConfig?.performance_goals?.max_drawdown_tolerance_pct ??
+        strategyConfig?.risk_params?.max_drawdown_tolerance_pct ??
+        0.18,
+    )
 
   const [
     accountStateResult,
