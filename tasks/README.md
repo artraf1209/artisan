@@ -1,48 +1,56 @@
-# Phase 0 Dev Tasks
+# Artisan v2 Rebuild — Task Index
 
-Each file is one coding session. Work them in order — later tasks depend on earlier ones.
+Full rebuild of Artisan per `/artisan-v2-spec.md` (rev 5) and `/artisan-v2-agent-prompts.md`. The v1 task set and spec are archived at `/archive/tasks-v1/` and `/archive/specs-v1.md` — v2 supersedes all v1 decisions; do not assume any v1 component works correctly for v2 without re-verifying against the new spec.
 
-The first table is the original Phase 0 build sequence. The second table captures the multi-factor strategy enhancement track introduced in [specs.md §9](../specs.md#9-strategy-page--multi-factor-enhancement).
+Each task file below is self-contained and implementation-ready: context, exact scope, file paths, and a verification section. Work through them **in order** — later tasks depend on earlier ones (DB schema before code that reads it, agent infrastructure before individual agents, backend before the frontend pages that read its output).
 
-| # | Task | Status | Depends on |
-|---|------|--------|------------|
-| 00 | specs.md updated | ✅ done | — |
-| 01 | [Supabase migration](./01-supabase-migration.md) | ⬜ pending | — |
-| 02 | [Python engine scaffold](./02-python-scaffold.md) | ⬜ pending | 01 |
-| 03 | [Adapter: Alpaca prices](./03-adapter-alpaca-prices.md) | ⬜ pending | 02 |
-| 04 | [Adapter: FMP fundamentals](./04-adapter-fmp-fundamentals.md) | ⬜ pending | 02 |
-| 05 | [Adapter: Finnhub news](./05-adapter-finnhub-news.md) | ⬜ pending | 02 |
-| 06 | [Job: nightly ingest](./06-job-nightly-ingest.md) | ⬜ pending | 03 04 05 |
-| 07 | [Scorer: technical](./07-scorer-technical.md) | ⬜ pending | 06 |
-| 08 | [Scorer: fundamental](./08-scorer-fundamental.md) | ⬜ pending | 06 |
-| 09 | [Scorer: sentiment](./09-scorer-sentiment.md) | ⬜ pending | 06 |
-| 10 | [Scorer: composite](./10-scorer-composite.md) | ⬜ pending | 07 08 09 |
-| 11 | [Signals pipeline](./11-signals-pipeline.md) | ⬜ pending | 10 |
-| 12 | [Job: daily score + signal](./12-job-daily-score-signal.md) | ⬜ pending | 11 |
-| 13 | [LLM: thesis analyst](./13-llm-thesis.md) | ⬜ pending | 12 |
-| 14 | [LLM: daily briefing](./14-llm-briefing.md) | ⬜ pending | 12 |
-| 15 | [Execution: Alpaca executor](./15-execution-alpaca.md) | ⬜ pending | 12 |
-| 16 | [Frontend: types + approval queue](./16-frontend-queue.md) | ⬜ pending | 11 |
-| 17 | [Frontend: notes + briefings pages](./17-frontend-notes-briefings.md) | ⬜ pending | 13 14 16 |
-| 18 | [Frontend: navbar + smoke test](./18-frontend-navbar-e2e.md) | ⬜ pending | 15 16 17 |
-| 19 | [Original strategy page task (superseded)](./19-feature-strategy-page.md) | ⬜ pending | 01 (partial: 11 15) |
+## Build order
 
-## Multi-Factor Enhancement Track
+**Schema & config**
+1. [v2-01-schema-migration.md](v2-01-schema-migration.md) — drop legacy tables, rename `signal_events`→`recommendations`, create 6 new tables, alter 4 existing ones
+2. [v2-02-strategies-seed.md](v2-02-strategies-seed.md) — seed `strategies` jsonb config, typed `StrategyParams` reader
 
-These tasks replace the old GoalPanel / UniverseThesis strategy plan with the current multi-factor strategy build. They should be worked in dependency order below, not from Task 19.
+**Ingest**
+3. [v2-03-nightly-ingest.md](v2-03-nightly-ingest.md) — rewrite `nightly_ingest.py`, add `pipeline_runs`/`portfolio_snapshots` writes
 
-| # | Task | Status | Depends on |
-|---|------|--------|------------|
-| 20 | [Factor layer migration](./20-enhancement-factor-layer-migration.md) | ⬜ pending | 01 |
-| 21 | [Dynamic universe screener + paid-tier universe policy](./21-enhancement-screener-budgeted-universe.md) | ⬜ pending | 04 06 20 |
-| 22 | [Extended fundamentals history + SPY ingest](./22-enhancement-fundamentals-history-and-spy-ingest.md) | ⬜ pending | 04 06 20 21 |
-| 23 | [Factor scoring suite](./23-enhancement-factor-scoring-suite.md) | ⬜ pending | 20 22 |
-| 24 | [Technical enrichments + entry gates](./24-enhancement-technical-entry-gates.md) | ⬜ pending | 07 20 22 |
-| 25 | [Daily score + signal multi-factor orchestration](./25-enhancement-daily-score-signal-multifactor.md) | ⬜ pending | 12 13 23 24 |
-| 26 | [Strategy page multi-factor frontend](./26-enhancement-strategy-page-multifactor.md) | ⬜ pending | 16 18 20 25 |
-| 27 | [Verification, contracts, and runtime alignment](./27-enhancement-verification-and-runtime-alignment.md) | ⬜ pending | 20 21 22 23 24 25 26 |
+**Scoring & timing**
+4. [v2-04-regime-classification.md](v2-04-regime-classification.md) — market regime (risk_on/neutral/risk_off)
+5. [v2-05-factor-scoring.md](v2-05-factor-scoring.md) — factor weights/shortlist size from config
+6. [v2-06-entry-gates-and-horizon.md](v2-06-entry-gates-and-horizon.md) — regime-aware gates, `effective_horizon_days`
 
-## Status legend
-- ✅ done
-- 🔄 in progress
-- ⬜ pending
+**Risk**
+7. [v2-07-risk-sizing.md](v2-07-risk-sizing.md) — position sizing, portfolio vetoes, trailing-stop ratchet
+
+**Knowledge base**
+8. [v2-08-knowledge-base.md](v2-08-knowledge-base.md) — `track_outcomes`, `expire_stale`, `query_decision_history`
+
+**Agents**
+9. [v2-09-agent-infrastructure.md](v2-09-agent-infrastructure.md) — shared agent plumbing, prompts, tool schemas
+10. [v2-10-analyst-agents.md](v2-10-analyst-agents.md) — Fundamental / Technical / Sentiment agents
+11. [v2-11-synthesis-agent.md](v2-11-synthesis-agent.md) — Synthesis (portfolio manager) agent
+12. [v2-12-position-review-agent.md](v2-12-position-review-agent.md) — Position Review agent
+13. [v2-13-briefing-agent.md](v2-13-briefing-agent.md) — Daily Briefing agent
+
+**Orchestration & execution**
+14. [v2-14-daily-pipeline.md](v2-14-daily-pipeline.md) — chained 6-job GitHub Actions workflow
+15. [v2-15-execute-trade.md](v2-15-execute-trade.md) — rewrite `execute-trade` edge function
+
+**Frontend**
+16. [v2-16-frontend-queue.md](v2-16-frontend-queue.md) — `/queue` (edit-before-execute approval)
+17. [v2-17-frontend-positions.md](v2-17-frontend-positions.md) — `/positions`
+18. [v2-18-frontend-account.md](v2-18-frontend-account.md) — `/account`
+19. [v2-19-frontend-orders.md](v2-19-frontend-orders.md) — `/orders`
+20. [v2-20-frontend-history.md](v2-20-frontend-history.md) — `/history` (decision knowledge base, browsable)
+21. [v2-21-frontend-strategy.md](v2-21-frontend-strategy.md) — `/strategy` (regime + shortlist + gates)
+22. [v2-22-frontend-settings.md](v2-22-frontend-settings.md) — `/settings` (editable strategy config)
+23. [v2-23-frontend-briefings.md](v2-23-frontend-briefings.md) — `/briefings`
+
+**Bot & docs**
+24. [v2-24-telegram-bot.md](v2-24-telegram-bot.md) — push notifications, `/pause`/`/resume` on `strategies.paused_until`
+25. [v2-25-update-claude-md.md](v2-25-update-claude-md.md) — rewrite `/CLAUDE.md`'s DB/data-flow sections (do this last)
+
+## Legacy cleanup (not a numbered task — folded into the tasks above at the point each item becomes obsolete)
+
+DB tables dropped in v2-01: `signals`, `trades`, `positions`, `logs`, `composite_scores`, `social_signals`, `llm_analyses`. Code deleted: `/engine/` (legacy TS engine), `engine-py/artisan/jobs/{daily_score_signal,process_intents}.py`, `engine-py/artisan/llm/`, `engine-py/artisan/pipeline/`, `engine-py/artisan/scorers/{composite,fundamental,sentiment,technical}.py`, `engine-py/artisan/execution/`, `supabase/functions/process-signal/`, and the frontend components/routes listed in the full rebuild plan at `/Users/artemrafaielian/.claude/plans/hybrid-trade-decision-curious-sloth.md`.
+
+Full plan reference (context, rationale, ground-truthed schema audit): see the plan file linked above.
