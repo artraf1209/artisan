@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from artisan.strategy_params import StrategyParams
+
 logger = logging.getLogger(__name__)
 
 RISK_PER_TRADE = 0.01      # 1% of capital per trade
@@ -14,15 +16,49 @@ K_STOP = 2.0               # ATR multiples for stop
 K_TARGET = 3.0             # ATR multiples for target
 ADX_TREND_THRESHOLD = 20.0
 
+# performance_multiplier drops to this once drawdown reaches half of max_drawdown_tolerance_pct
+PERFORMANCE_MULTIPLIER_DROP = 0.8
 
-def _market_regime_ok(spy_df: pd.DataFrame) -> bool:
-    """Gate 0: SPY above SMA200 and SMA50 > SMA200."""
-    if spy_df is None or len(spy_df) < 200:
-        return True  # can't assess → allow
-    close = spy_df["close"].astype(float)
-    sma50 = close.rolling(50).mean().iloc[-1]
-    sma200 = close.rolling(200).mean().iloc[-1]
-    return bool(close.iloc[-1] > sma200 and sma50 > sma200)
+
+def _market_regime_ok(regime: str | None) -> bool | None:
+    """Gate 0 (informational): reads the once-per-run regime from regime_snapshots
+    (v2-04's classify_regime(), computed earlier in the same pipeline run) instead
+    of doing its own live SPY check. risk_off does NOT hard-block this gate or
+    `actionable` by itself — it only narrows ENTER-eligibility later in Synthesis
+    (v2-11) via the regime-based rank thresholds.
+    """
+    if regime is None:
+        return None
+    return regime != "risk_off"
+
+
+def compute_performance_multiplier(
+    drawdown_from_high_pct: float | None, strategy_params: StrategyParams
+) -> float:
+    """1.0 by default; drops to 0.8 once portfolio drawdown (from the latest
+    portfolio_snapshots row, written in v2-03) reaches or exceeds half of
+    max_drawdown_tolerance_pct. Computed once per run (in score.py, v2-14) and
+    passed into every compute_effective_horizon() call for that run.
+    """
+    if drawdown_from_high_pct is None:
+        return 1.0
+    threshold = -abs(strategy_params.max_drawdown_tolerance_pct) / 2
+    return PERFORMANCE_MULTIPLIER_DROP if drawdown_from_high_pct <= threshold else 1.0
+
+
+def compute_effective_horizon(
+    setup_type: str,
+    regime: str,
+    performance_multiplier: float,
+    strategy_params: StrategyParams,
+) -> int:
+    """Spec §5.2: how many days a position of this setup_type is expected to be
+    held, scaled down in choppier regimes or after portfolio drawdown, capped by
+    max_holding_period_days."""
+    baseline = strategy_params.horizon_baseline_days[setup_type]
+    regime_mult = strategy_params.regime_multipliers[regime]
+    perf_mult = min(1.0, performance_multiplier)  # never inflates the horizon above baseline
+    return min(int(baseline * regime_mult * perf_mult), strategy_params.max_holding_period_days)
 
 
 def _trend_ok(snapshot: dict[str, Any]) -> bool:
@@ -159,12 +195,21 @@ def evaluate_entry(
     spy_df: pd.DataFrame | None,
     capital: float,
     strategy_id: str,
+    run_id: str,
+    regime: str | None,
+    strategy_params: StrategyParams,
+    performance_multiplier: float = 1.0,
     evaluated_at: str | None = None,
 ) -> dict[str, Any]:
-    """Run all gates and return entry_signals row dict."""
+    """Run all gates and return an entry_signals row dict.
+
+    regime is read from this run's regime_snapshots row (v2-04's classify_regime(),
+    computed once at the start of the pipeline run) — Gate 0 no longer does its own
+    live SPY check. spy_df is still used for Gate 3's relative-strength-vs-SPY check.
+    """
     evaluated_at = evaluated_at or datetime.now(timezone.utc).isoformat()
 
-    gate_market = _market_regime_ok(spy_df) if spy_df is not None else None
+    gate_market = _market_regime_ok(regime)
     gate_trend = _trend_ok(snapshot)
     setup_type = _detect_setup(snapshot) if gate_trend else None
     gate_confirmed = _confirmed(snapshot, spy_df) if setup_type else False
@@ -178,17 +223,25 @@ def evaluate_entry(
     shares = _position_size(capital, entry, stop) if gate_confirmed and setup_type else 0
     dollar_risk = round(shares * (entry - stop), 2) if shares else None
 
+    # risk_off doesn't hard-block here (Synthesis enforces the regime-based rank
+    # thresholds) — gate_market is stored for display only, not required to pass.
     all_gates_pass = bool(
-        gate_market is not False
-        and gate_trend
+        gate_trend
         and setup_type is not None
         and gate_confirmed
         and shares > 0
     )
 
+    effective_horizon_days = (
+        compute_effective_horizon(setup_type, regime, performance_multiplier, strategy_params)
+        if setup_type is not None and regime is not None
+        else None
+    )
+
     return {
         "symbol": symbol,
         "strategy_id": strategy_id,
+        "run_id": run_id,
         "evaluated_at": evaluated_at,
         "gate_market": gate_market,
         "gate_trend": gate_trend,
@@ -201,5 +254,6 @@ def evaluate_entry(
         "r_multiple": r_multiple,
         "shares": shares if shares else None,
         "dollar_risk": dollar_risk,
+        "effective_horizon_days": effective_horizon_days,
         "actionable": all_gates_pass,
     }
