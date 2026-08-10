@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
     return [
       { source: '/positions', destination: '/dashboard/positions', permanent: true },
       { source: '/account', destination: '/dashboard/account', permanent: true },
+      { source: '/orders', destination: '/recommendations/orders', permanent: true },
     ]
   },
 }

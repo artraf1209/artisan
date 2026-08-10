@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 // migration and were already broken/orphaned) — see tasks/v3-02.
 const nav = [
   { href: '/dashboard', label: 'Home', icon: BarChart3 },
-  { href: '/orders', label: 'Orders', icon: TrendingUp },
+  { href: '/recommendations/orders', label: 'Orders', icon: TrendingUp },
   { href: '/trades/queue', label: 'Queue', icon: ClipboardCheck },
   { href: '/briefings', label: 'Briefings', icon: Newspaper },
   { href: '/strategy', label: 'Strategy', icon: Target },

@@ -59,7 +59,7 @@ export default async function HistoryPage({
       title="History"
       subtitle="Browse the same decision-outcome archive the agents query before making new calls, with live aggregate stats over the filtered set."
       actions={[
-        { href: '/orders', label: 'Orders', icon: TrendingUp },
+        { href: '/recommendations/orders', label: 'Orders', icon: TrendingUp },
         { href: '/briefings', label: 'Briefings', icon: Newspaper },
       ]}
     >
