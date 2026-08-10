@@ -528,10 +528,19 @@ async function persistOverrides(
     stop_price: number
     overrides: Record<string, unknown>
   },
+  existingOverrides: Record<string, unknown> | null | undefined,
 ) {
+  const mergedOverrides = {
+    ...(existingOverrides ?? {}),
+    ...payload.overrides,
+  }
+
   const { error } = await supabase
     .from('trade_intents')
-    .update(payload)
+    .update({
+      ...payload,
+      overrides: mergedOverrides,
+    })
     .eq('id', intentId)
 
   if (error) {
@@ -656,6 +665,38 @@ async function updateRecommendationAndOutcome(
   }
 }
 
+async function updatePositionReviewOutcome(
+  supabase: ReturnType<typeof createClient>,
+  {
+    positionReviewId,
+    fillPrice,
+    effectiveStopPrice,
+    effectiveTargetPrice,
+  }: {
+    positionReviewId: string
+    fillPrice: number | null
+    effectiveStopPrice: number | null
+    effectiveTargetPrice: number | null
+  },
+) {
+  const { error } = await supabase
+    .from('decision_outcomes')
+    .update({
+      mode: 'real',
+      entry_price_reference: fillPrice,
+      stop_price: effectiveStopPrice,
+      target_price: effectiveTargetPrice,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('source_type', 'position_review')
+    .eq('source_id', positionReviewId)
+    .eq('mode', 'shadow')
+
+  if (error) {
+    throw new TradeError(error.message, 500, 'other')
+  }
+}
+
 Deno.serve(async (req): Promise<Response> => {
   try {
     const payload = (await req.json()) as ExecuteTradePayload
@@ -669,19 +710,21 @@ Deno.serve(async (req): Promise<Response> => {
     )
 
     const { intent, recommendation } = await loadTradeIntent(supabase, payload.trade_intent_id.trim())
+    const positionReviewSourceId =
+      intent.overrides?.source_type === 'position_review' && typeof intent.overrides?.source_id === 'string'
+        ? intent.overrides.source_id
+        : null
 
     const requestedOverrides = payload.overrides ?? {}
     const hasOverrides = Object.keys(requestedOverrides).length > 0
-    const entryPrice =
-      toNumber(recommendation.entry_price)
-      ?? (() => {
-        const quantity = toNumber(intent.quantity)
-        const dollarValue = toNumber(intent.dollar_value)
-        if (quantity && quantity > 0 && dollarValue != null) {
-          return dollarValue / quantity
-        }
-        return null
-      })()
+    const entryPrice = (() => {
+      const quantity = toNumber(intent.quantity)
+      const dollarValue = toNumber(intent.dollar_value)
+      if (quantity && quantity > 0 && dollarValue != null) {
+        return dollarValue / quantity
+      }
+      return toNumber(recommendation.entry_price)
+    })()
 
     if (entryPrice == null || entryPrice <= 0) {
       throw new TradeError('Recommendation is missing a valid entry price.', 400, 'other')
@@ -763,7 +806,7 @@ Deno.serve(async (req): Promise<Response> => {
         dollar_value: round(effectiveQuantity * entryPrice, 2),
         stop_price: round(effectiveStopPrice, 4),
         overrides: normalizedOverrides,
-      })
+      }, intent.overrides)
     }
 
     const account = await fetchAlpacaAccount()
@@ -833,12 +876,21 @@ Deno.serve(async (req): Promise<Response> => {
     }
 
     if (intent.side === 'buy' && executionStatus === 'filled') {
-      await updateRecommendationAndOutcome(supabase, {
-        recommendation,
-        fillPrice: toNumber(execution.filled_price),
-        effectiveStopPrice: effectiveStopPrice == null ? null : round(effectiveStopPrice, 4),
-        effectiveTargetPrice: effectiveTargetPrice == null ? null : round(effectiveTargetPrice, 4),
-      })
+      if (positionReviewSourceId) {
+        await updatePositionReviewOutcome(supabase, {
+          positionReviewId: positionReviewSourceId,
+          fillPrice: toNumber(execution.filled_price),
+          effectiveStopPrice: effectiveStopPrice == null ? null : round(effectiveStopPrice, 4),
+          effectiveTargetPrice: effectiveTargetPrice == null ? null : round(effectiveTargetPrice, 4),
+        })
+      } else {
+        await updateRecommendationAndOutcome(supabase, {
+          recommendation,
+          fillPrice: toNumber(execution.filled_price),
+          effectiveStopPrice: effectiveStopPrice == null ? null : round(effectiveStopPrice, 4),
+          effectiveTargetPrice: effectiveTargetPrice == null ? null : round(effectiveTargetPrice, 4),
+        })
+      }
     }
 
     return jsonResponse({
