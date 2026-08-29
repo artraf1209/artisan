@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { invokeExecuteTrade, RouteError } from '@/lib/execute-trade'
 import {
   computePositionSize,
   DEFAULT_ACCOUNT_ID,
@@ -19,15 +20,6 @@ type ApproveBody = {
   queue_type?: QueueType
   note?: string
   overrides?: OverridePayload
-}
-
-class RouteError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message)
-  }
 }
 
 function normalizedNote(note?: string) {
@@ -53,63 +45,6 @@ function normalizeOverrides(overrides?: OverridePayload) {
   }
 
   return Object.values(normalized).some((value) => value != null) ? normalized : undefined
-}
-
-async function invokeExecuteTrade(
-  tradeIntentId: string,
-  overrides?: {
-    shares?: number
-    stop_price?: number
-    target_price?: number
-  },
-) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    throw new RouteError('Supabase function credentials are not configured.', 500)
-  }
-
-  try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/execute-trade`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${serviceRoleKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        trade_intent_id: tradeIntentId,
-        ...(overrides ? { overrides } : {}),
-      }),
-    })
-
-    const body = (await response.json().catch(() => null)) as
-      | {
-          error?: string
-          error_type?: string
-          status?: string
-          execution_status?: string
-        }
-      | null
-
-    return {
-      ok: response.ok,
-      status: response.status,
-      body,
-      networkFailure: false as const,
-    }
-  } catch (error) {
-    // The fetch() call itself threw (network failure, DNS issue, edge-function cold
-    // start timeout) -- distinct from execute-trade responding with a non-ok status.
-    // Without this, the trade_intent stays at 'pending' forever with no audit trail.
-    return {
-      ok: false,
-      status: 0,
-      body: null,
-      networkFailure: true as const,
-      networkError: error instanceof Error ? error.message : String(error),
-    }
-  }
 }
 
 async function updateTradeIntentStatus(

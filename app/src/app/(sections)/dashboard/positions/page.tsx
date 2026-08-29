@@ -1,4 +1,6 @@
 import StatusBadge from '@/components/shared/StatusBadge'
+import RealtimeRefresher from '@/components/shared/RealtimeRefresher'
+import ClosePositionDialog from '@/components/positions/ClosePositionDialog'
 import { createServerClient } from '@/lib/supabase/server'
 import { loadOpenPositions, type PositionOverview } from '@/lib/positions'
 import { formatCurrency, formatPercent } from '@/lib/utils'
@@ -52,6 +54,7 @@ export default async function PositionsPage() {
           ))}
         </div>
       )}
+      <RealtimeRefresher tables={['portfolio_positions', 'trade_executions']} />
     </>
   )
 }
@@ -115,15 +118,24 @@ function PositionCard({ position }: { position: PositionOverview }) {
           </details>
         </div>
 
-        <div className="grid min-w-full grid-cols-2 gap-3 sm:min-w-[28rem] sm:grid-cols-4">
-          <Metric label="Current" value={formatCurrency(position.current_price)} />
-          <Metric label="P/L $" value={formatCurrency(position.unrealized_pnl)} />
-          <Metric label="P/L %" value={formatPercent(position.unrealized_pnl_pct)} />
-          <Metric label="R multiple" value={position.r_multiple == null ? '—' : `${position.r_multiple.toFixed(2)}R`} />
-          <Metric label="Stop" value={formatCurrency(position.stop_price)} />
-          <Metric label="Target" value={formatCurrency(position.target_price)} />
-          <Metric label="To stop" value={formatDistance(position.distance_to_stop_dollars, position.distance_to_stop_pct)} />
-          <Metric label="To target" value={formatDistance(position.distance_to_target_dollars, position.distance_to_target_pct)} />
+        <div className="flex flex-col items-start gap-3 sm:min-w-[28rem] xl:items-end">
+          <ClosePositionDialog
+            positionId={position.id}
+            symbol={position.symbol}
+            quantity={position.quantity}
+            currentPrice={position.current_price}
+            hasRestingOrders={position.has_resting_orders}
+          />
+          <div className="grid min-w-full grid-cols-2 gap-3 sm:grid-cols-4">
+            <Metric label="Current" value={formatCurrency(position.current_price)} />
+            <Metric label="P/L $" value={formatCurrency(position.unrealized_pnl)} />
+            <Metric label="P/L %" value={formatPercent(position.unrealized_pnl_pct)} />
+            <Metric label="R multiple" value={position.r_multiple == null ? '—' : `${position.r_multiple.toFixed(2)}R`} />
+            <Metric label="Stop" value={formatCurrency(position.stop_price)} />
+            <Metric label="Target" value={formatCurrency(position.target_price)} />
+            <Metric label="To stop" value={formatDistance(position.distance_to_stop_dollars, position.distance_to_stop_pct)} />
+            <Metric label="To target" value={formatDistance(position.distance_to_target_dollars, position.distance_to_target_pct)} />
+          </div>
         </div>
       </div>
 

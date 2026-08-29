@@ -1,19 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { RouteError } from '@/lib/execute-trade'
 import { DEFAULT_ADMIN_USER_ID, type QueueType } from '@/lib/queue'
 
 type RejectBody = {
   queue_type?: QueueType
   note?: string
-}
-
-class RouteError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message)
-  }
 }
 
 export async function POST(

@@ -11,6 +11,9 @@ type PositionRow = {
   signal_id: string | null
   opened_at: string
   updated_at: string
+  entry_order_id: string | null
+  stop_order_id: string | null
+  target_order_id: string | null
 }
 
 type RecommendationRow = {
@@ -97,6 +100,7 @@ export interface PositionOverview {
   trailing_stop_active: boolean
   near_day_30: boolean
   needs_attention: boolean
+  has_resting_orders: boolean
   original_recommendation: PositionRecommendationContext | null
   latest_review: LatestPositionReview | null
 }
@@ -157,7 +161,7 @@ export async function loadOpenPositions(supabase: any, now = new Date()): Promis
   const { data: rawPositions, error: positionsError } = await supabase
     .from('portfolio_positions')
     .select(
-      'id, account_id, symbol, quantity, avg_entry_price, current_price, unrealized_pnl, stop_price, target_price, signal_id, opened_at, updated_at',
+      'id, account_id, symbol, quantity, avg_entry_price, current_price, unrealized_pnl, stop_price, target_price, signal_id, opened_at, updated_at, entry_order_id, stop_order_id, target_order_id',
     )
     .order('opened_at', { ascending: false })
 
@@ -322,6 +326,9 @@ export async function loadOpenPositions(supabase: any, now = new Date()): Promis
       latestReview != null &&
       ['close', 'trim'].includes(latestReview.recommended_action.toLowerCase())
     const nearDay30 = daysRemainingCeiling < 5
+    const hasRestingOrders = Boolean(
+      position.entry_order_id || position.stop_order_id || position.target_order_id,
+    )
 
     return {
       id: position.id,
@@ -350,6 +357,7 @@ export async function loadOpenPositions(supabase: any, now = new Date()): Promis
       trailing_stop_active: trailingStopActive,
       near_day_30: nearDay30,
       needs_attention: nearDay30 || reviewNeedsAttention,
+      has_resting_orders: hasRestingOrders,
       original_recommendation: recommendation,
       latest_review: latestReview,
     } satisfies PositionOverview
