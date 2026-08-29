@@ -1,8 +1,10 @@
 import StatusBadge from '@/components/shared/StatusBadge'
 import RealtimeRefresher from '@/components/shared/RealtimeRefresher'
 import ClosePositionDialog from '@/components/positions/ClosePositionDialog'
+import OrderHistoryPanel from '@/components/positions/OrderHistoryPanel'
 import { createServerClient } from '@/lib/supabase/server'
 import { loadOpenPositions, type PositionOverview } from '@/lib/positions'
+import { loadOrders, type OrderHistoryRow } from '@/lib/orders'
 import { formatCurrency, formatPercent } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
@@ -16,6 +18,15 @@ export default async function PositionsPage() {
     }
     return right.days_held - left.days_held
   })
+
+  const historyBySymbol = new Map<string, OrderHistoryRow[]>(
+    await Promise.all(
+      sortedPositions.map(
+        async (position) =>
+          [position.symbol, await loadOrders(supabase, { symbol: position.symbol, limit: 20 })] as const,
+      ),
+    ),
+  )
 
   const totalUnrealized = positions.reduce((sum, position) => sum + (position.unrealized_pnl ?? 0), 0)
   const attentionCount = positions.filter((position) => position.needs_attention).length
@@ -50,7 +61,11 @@ export default async function PositionsPage() {
       ) : (
         <div className="space-y-4">
           {sortedPositions.map((position) => (
-            <PositionCard key={position.id} position={position} />
+            <PositionCard
+              key={position.id}
+              position={position}
+              history={historyBySymbol.get(position.symbol) ?? []}
+            />
           ))}
         </div>
       )}
@@ -59,7 +74,7 @@ export default async function PositionsPage() {
   )
 }
 
-function PositionCard({ position }: { position: PositionOverview }) {
+function PositionCard({ position, history }: { position: PositionOverview; history: OrderHistoryRow[] }) {
   const reviewAction = position.latest_review?.recommended_action?.toLowerCase() ?? null
   const showAttention = position.needs_attention
   const horizonPct =
@@ -115,6 +130,14 @@ function PositionCard({ position }: { position: PositionOverview }) {
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
               {position.original_recommendation?.thesis ?? 'No linked recommendation thesis found.'}
             </p>
+          </details>
+          <details className="rounded-2xl border border-border bg-background/35 p-4">
+            <summary className="cursor-pointer text-sm font-medium text-foreground">
+              Order history ({history.length})
+            </summary>
+            <div className="mt-3">
+              <OrderHistoryPanel orders={history} />
+            </div>
           </details>
         </div>
 

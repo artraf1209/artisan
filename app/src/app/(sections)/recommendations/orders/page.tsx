@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import StatusBadge from '@/components/shared/StatusBadge'
 import { createServerClient } from '@/lib/supabase/server'
-import { loadOrders, type OrderHistoryRow } from '@/lib/orders'
+import { describeOrderType, humanizeLegType, loadOrders, type OrderHistoryRow } from '@/lib/orders'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
@@ -23,13 +23,6 @@ function firstValue(value: string | string[] | undefined) {
 
 function humanizeResolution(value: string | null) {
   return (value ?? 'still_open').replaceAll('_', ' ')
-}
-
-function humanizeLegType(value: OrderHistoryRow['leg_type']) {
-  if (value === 'stop_loss') return 'Stop loss'
-  if (value === 'take_profit') return 'Take profit'
-  if (value === 'entry') return 'Entry'
-  return null
 }
 
 export default async function OrdersPage({
@@ -196,6 +189,9 @@ function OrderCard({ order }: { order: OrderHistoryRow }) {
             <h2 className="text-xl font-semibold tracking-[-0.04em] text-foreground">{order.symbol}</h2>
             <StatusBadge status={order.side} />
             <StatusBadge status={order.execution_status} />
+            <span className="inline-flex items-center rounded-full border border-border bg-background/70 px-2.5 py-1 text-[0.7rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              {describeOrderType(order)}
+            </span>
             {humanizeLegType(order.leg_type) && (
               <span className="inline-flex items-center rounded-full border border-border bg-background/70 px-2.5 py-1 text-[0.7rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 {humanizeLegType(order.leg_type)}
@@ -257,6 +253,9 @@ function OrderTableRow({ order }: { order: OrderHistoryRow }) {
             <span className="font-medium text-foreground">{order.symbol}</span>
             <StatusBadge status={order.side} />
             <StatusBadge status={order.execution_status} />
+            <span className="inline-flex items-center rounded-full border border-border bg-background/70 px-2.5 py-1 text-[0.7rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              {describeOrderType(order)}
+            </span>
             {humanizeLegType(order.leg_type) && (
               <span className="inline-flex items-center rounded-full border border-border bg-background/70 px-2.5 py-1 text-[0.7rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 {humanizeLegType(order.leg_type)}

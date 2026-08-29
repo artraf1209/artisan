@@ -205,6 +205,9 @@ class FakeOrdersAdapter:
     def get_position(self, symbol: str) -> dict | None:
         return self.positions.get(symbol)
 
+    def get_all_positions(self) -> list[dict]:
+        return list(self.positions.values())
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -500,3 +503,98 @@ class TestPollPass:
 
         assert db.tables["trade_executions"][0]["status"] == "cancelled"
         assert alerts == []
+
+
+class TestPositionRefreshPass:
+    def _db_position(self, **overrides) -> dict:
+        base = {
+            "id": "pos-1", "account_id": "acct-1", "symbol": "AAPL", "quantity": 10.0,
+            "avg_entry_price": 100.0, "current_price": 100.0, "unrealized_pnl": 0.0,
+            "stop_price": 90.0, "target_price": 120.0, "signal_id": "rec-1",
+            "entry_order_id": "entry-1", "stop_order_id": "stop-1", "target_order_id": "target-1",
+        }
+        base.update(overrides)
+        return base
+
+    def test_refreshes_price_and_pnl_with_no_pending_order(self) -> None:
+        # A position with zero rows in trade_executions/trade_intents (no order
+        # activity at all right now) must still get its price/PnL refreshed.
+        db = FakeDB({"portfolio_positions": [self._db_position()]})
+        adapter = FakeOrdersAdapter(
+            positions={"AAPL": {"symbol": "AAPL", "qty": "10", "avg_entry_price": "100", "current_price": "115", "unrealized_pl": "150"}},
+        )
+        reconciler = TradeReconciler(db=db, orders_adapter=adapter)
+        summary = reconciler.run_position_refresh_pass()
+
+        assert summary == {"db_positions": 1, "refreshed": 1, "closed": 0, "orphans_alerted": 0, "errors": 0}
+        position = db.tables["portfolio_positions"][0]
+        assert position["current_price"] == 115.0
+        assert position["unrealized_pnl"] == 150.0
+
+    def test_leaves_risk_fields_and_order_ids_untouched(self) -> None:
+        db = FakeDB({"portfolio_positions": [self._db_position()]})
+        adapter = FakeOrdersAdapter(
+            positions={"AAPL": {"symbol": "AAPL", "qty": "10", "avg_entry_price": "100", "current_price": "115", "unrealized_pl": "150"}},
+        )
+        reconciler = TradeReconciler(db=db, orders_adapter=adapter)
+        reconciler.run_position_refresh_pass()
+
+        position = db.tables["portfolio_positions"][0]
+        assert position["stop_price"] == 90.0
+        assert position["target_price"] == 120.0
+        assert position["signal_id"] == "rec-1"
+        assert position["entry_order_id"] == "entry-1"
+        assert position["stop_order_id"] == "stop-1"
+        assert position["target_order_id"] == "target-1"
+
+    def test_deletes_position_alpaca_no_longer_reports(self) -> None:
+        db = FakeDB({"portfolio_positions": [self._db_position()]})
+        adapter = FakeOrdersAdapter(positions={})  # Alpaca reports nothing for AAPL
+        reconciler = TradeReconciler(db=db, orders_adapter=adapter)
+        summary = reconciler.run_position_refresh_pass()
+
+        assert summary["closed"] == 1
+        assert db.tables["portfolio_positions"] == []
+
+    def test_alerts_on_orphan_broker_position_without_fabricating_a_row(self, monkeypatch) -> None:
+        alerts: list[dict] = []
+        monkeypatch.setattr(
+            "artisan.jobs.reconcile_trades.send_alert",
+            lambda **kwargs: alerts.append(kwargs),
+        )
+        db = FakeDB({"portfolio_positions": [], "audit_log": []})
+        adapter = FakeOrdersAdapter(
+            positions={"MSFT": {"symbol": "MSFT", "qty": "5", "avg_entry_price": "300", "current_price": "310", "unrealized_pl": "50"}},
+        )
+        reconciler = TradeReconciler(db=db, orders_adapter=adapter)
+        summary = reconciler.run_position_refresh_pass()
+
+        assert summary["orphans_alerted"] == 1
+        assert db.tables["portfolio_positions"] == []  # never fabricated
+        assert len(alerts) == 1
+        assert "MSFT" in alerts[0]["message"]
+        assert db.tables["audit_log"][0]["action"] == "orphan_broker_position_detected"
+
+    def test_noop_when_nothing_open_anywhere(self) -> None:
+        db = FakeDB({"portfolio_positions": []})
+        adapter = FakeOrdersAdapter(positions={})
+        reconciler = TradeReconciler(db=db, orders_adapter=adapter)
+        summary = reconciler.run_position_refresh_pass()
+
+        assert summary == {"db_positions": 0, "refreshed": 0, "closed": 0, "orphans_alerted": 0, "errors": 0}
+
+    def test_orphan_detection_runs_even_with_zero_db_positions(self, monkeypatch) -> None:
+        # The Alpaca call (and therefore orphan detection) must not be skipped just
+        # because our own DB currently has nothing to refresh.
+        alerts: list[dict] = []
+        monkeypatch.setattr(
+            "artisan.jobs.reconcile_trades.send_alert",
+            lambda **kwargs: alerts.append(kwargs),
+        )
+        db = FakeDB({"portfolio_positions": [], "audit_log": []})
+        adapter = FakeOrdersAdapter(positions={"MSFT": {"symbol": "MSFT", "qty": "5"}})
+        reconciler = TradeReconciler(db=db, orders_adapter=adapter)
+        summary = reconciler.run_position_refresh_pass()
+
+        assert summary["orphans_alerted"] == 1
+        assert len(alerts) == 1

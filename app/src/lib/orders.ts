@@ -1,3 +1,5 @@
+import { formatCurrency } from '@/lib/utils'
+
 type RecommendationRow = {
   id: string
   symbol: string
@@ -30,12 +32,15 @@ export interface OrderHistoryRow {
   symbol: string
   side: string
   leg_type: 'entry' | 'stop_loss' | 'take_profit' | null
+  order_type: 'market' | 'limit'
+  limit_price: number | null
   execution_status: string
   intent_status: string | null
   filled_qty: number | null
   filled_price: number | null
   filled_at: string | null
   created_at: string
+  requested_quantity: number | null
   recommended_shares: number | null
   recommended_stop_price: number | null
   recommended_target_price: number | null
@@ -46,6 +51,22 @@ export interface OrderHistoryRow {
   resolution: string
   r_multiple: number | null
   source_type: 'recommendation' | 'position_review'
+}
+
+/** Shared by the standalone Orders page and the per-position history panel so the
+ * two views can't silently drift on how an order's type/leg is described. */
+export function describeOrderType(order: Pick<OrderHistoryRow, 'order_type' | 'limit_price'>): string {
+  if (order.order_type === 'limit') {
+    return order.limit_price == null ? 'Limit' : `Limit @ ${formatCurrency(order.limit_price)}`
+  }
+  return 'Market'
+}
+
+export function humanizeLegType(value: OrderHistoryRow['leg_type']): string | null {
+  if (value === 'stop_loss') return 'Stop loss'
+  if (value === 'take_profit') return 'Take profit'
+  if (value === 'entry') return 'Entry'
+  return null
 }
 
 function toNumber(value: unknown): number | null {
@@ -84,6 +105,8 @@ function parseIntent(raw: unknown) {
         quantity: number | string | null
         stop_price: number | string | null
         status: string | null
+        order_type: 'market' | 'limit' | null
+        limit_price: number | string | null
         overrides?: Record<string, unknown> | null
       }
     | null
@@ -94,7 +117,7 @@ export async function loadOrders(supabase: any, filters: OrdersFilters = {}): Pr
   const { data: executionRows, error: executionsError } = await supabase
     .from('trade_executions')
     .select(
-      'id, status, filled_qty, filled_price, filled_at, created_at, leg_type, trade_intents(id, signal_id, symbol, side, quantity, stop_price, status, overrides)',
+      'id, status, filled_qty, filled_price, filled_at, created_at, leg_type, trade_intents(id, signal_id, symbol, side, quantity, stop_price, status, order_type, limit_price, overrides)',
     )
     .order('created_at', { ascending: false })
     .limit(limit)
@@ -238,9 +261,12 @@ export async function loadOrders(supabase: any, filters: OrdersFilters = {}): Pr
       symbol: intent.symbol,
       side,
       leg_type: legType,
+      order_type: intent.order_type ?? 'market',
+      limit_price: toNumber(intent.limit_price),
       execution_status: String(execution.status ?? 'pending'),
       intent_status: intent.status ?? null,
       filled_qty: toNumber(execution.filled_qty) ?? toNumber(intent.quantity),
+      requested_quantity: toNumber(intent.quantity),
       filled_price: toNumber(execution.filled_price),
       filled_at: (execution.filled_at as string | null) ?? null,
       created_at: String(execution.created_at),

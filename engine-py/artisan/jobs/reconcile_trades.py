@@ -401,41 +401,132 @@ class TradeReconciler:
             ).execute()
 
     def _sync_portfolio_position(self, intent: dict[str, Any]) -> None:
+        alpaca_position = self.orders.get_position(intent["symbol"])
+        self._apply_alpaca_position(
+            intent["account_id"],
+            intent["symbol"],
+            alpaca_position,
+            stop_price_override=_to_float(intent.get("stop_price")),
+            signal_id_override=intent.get("signal_id"),
+        )
+
+    def _apply_alpaca_position(
+        self,
+        account_id: str,
+        symbol: str,
+        alpaca_position: dict[str, Any] | None,
+        *,
+        stop_price_override: float | None = None,
+        signal_id_override: str | None = None,
+    ) -> None:
+        """Upserts (or deletes, if Alpaca no longer reports it) one portfolio_positions
+        row from Alpaca's live position data. `stop_price_override`/`signal_id_override`
+        are only ever supplied by the per-intent sync path (a just-placed order carries
+        fresher values) -- the periodic all-positions refresh calls this with neither,
+        so it only ever touches quantity/avg_entry_price/current_price/unrealized_pnl
+        and leaves our own risk-management fields (stop/target/signal_id/order ids)
+        untouched, since none of those come from Alpaca's position response anyway."""
         existing_rows = (
             self.db.table("portfolio_positions")
             .select("signal_id,stop_price,target_price,entry_order_id,stop_order_id,target_order_id")
-            .eq("account_id", intent["account_id"])
-            .eq("symbol", intent["symbol"])
+            .eq("account_id", account_id)
+            .eq("symbol", symbol)
             .limit(1)
             .execute()
             .data
         )
         existing = existing_rows[0] if existing_rows else {}
 
-        alpaca_position = self.orders.get_position(intent["symbol"])
         current_qty = _to_float((alpaca_position or {}).get("qty"), 0.0) or 0.0
         if alpaca_position is None or current_qty <= 0:
-            self.db.table("portfolio_positions").delete().eq("account_id", intent["account_id"]).eq(
-                "symbol", intent["symbol"]
+            self.db.table("portfolio_positions").delete().eq("account_id", account_id).eq(
+                "symbol", symbol
             ).execute()
             return
 
         row = {
-            "account_id": intent["account_id"],
-            "symbol": intent["symbol"],
+            "account_id": account_id,
+            "symbol": symbol,
             "quantity": current_qty,
             "avg_entry_price": _to_float(alpaca_position.get("avg_entry_price"), 0.0),
             "current_price": _to_float(alpaca_position.get("current_price")),
             "unrealized_pnl": _to_float(alpaca_position.get("unrealized_pl")),
-            "stop_price": _to_float(intent.get("stop_price")) or existing.get("stop_price"),
+            "stop_price": stop_price_override or existing.get("stop_price"),
             "target_price": existing.get("target_price"),
-            "signal_id": existing.get("signal_id") or intent.get("signal_id"),
+            "signal_id": existing.get("signal_id") or signal_id_override,
             "entry_order_id": existing.get("entry_order_id"),
             "stop_order_id": existing.get("stop_order_id"),
             "target_order_id": existing.get("target_order_id"),
             "updated_at": datetime.now(UTC).isoformat(),
         }
         self.db.table("portfolio_positions").upsert(row, on_conflict="account_id,symbol").execute()
+
+    # ------------------------------------------------------------------
+    # Refresh every open position every cycle, not just ones with active order
+    # flow -- otherwise a quiet position's price/P&L goes stale indefinitely.
+    # ------------------------------------------------------------------
+
+    def fetch_all_open_positions(self) -> list[dict[str, Any]]:
+        return fetch_all_pages(
+            lambda: self.db.table("portfolio_positions").select("account_id,symbol").order("symbol")
+        )
+
+    def run_position_refresh_pass(self) -> dict[str, int]:
+        db_positions = self.fetch_all_open_positions()
+
+        # Always check Alpaca, even with zero known positions -- orphan detection
+        # (a broker-side position with nothing in our DB) must not be skipped just
+        # because we don't have anything else to refresh.
+        try:
+            alpaca_positions = self.orders.get_all_positions()
+        except Exception as exc:
+            logger.warning("Failed to fetch all positions from Alpaca: %s", exc)
+            return {"db_positions": len(db_positions), "refreshed": 0, "closed": 0, "orphans_alerted": 0, "errors": 1}
+
+        alpaca_by_symbol = {p["symbol"]: p for p in alpaca_positions}
+        db_symbols = {p["symbol"] for p in db_positions}
+
+        refreshed = 0
+        closed = 0
+        for position in db_positions:
+            alpaca_position = alpaca_by_symbol.get(position["symbol"])
+            self._apply_alpaca_position(position["account_id"], position["symbol"], alpaca_position)
+            if alpaca_position is None:
+                closed += 1
+            else:
+                refreshed += 1
+
+        # An Alpaca position with nothing in our DB (e.g. a manual trade placed outside
+        # this system) is surfaced, never silently materialized -- there's no originating
+        # recommendation/intent to attach it to.
+        orphans_alerted = 0
+        for symbol, alpaca_position in alpaca_by_symbol.items():
+            if symbol in db_symbols:
+                continue
+            orphans_alerted += 1
+            write_audit_log(
+                self.db,
+                actor="reconcile-trades",
+                action="orphan_broker_position_detected",
+                entity="portfolio_positions",
+                entity_id=None,
+                payload={"symbol": symbol, "qty": alpaca_position.get("qty")},
+            )
+            send_alert(
+                trigger="trade_reconciliation",
+                message=(
+                    f"{symbol}: Alpaca reports an open position ({alpaca_position.get('qty')} shares) "
+                    "with no matching record in this system -- manual review needed."
+                ),
+            )
+
+        return {
+            "db_positions": len(db_positions),
+            "refreshed": refreshed,
+            "closed": closed,
+            "orphans_alerted": orphans_alerted,
+            "errors": 0,
+        }
 
     def _update_recommendation_and_outcome(self, recommendation_id: str, fill_price: float | None, intent: dict[str, Any]) -> None:
         rec_rows = (
@@ -575,10 +666,12 @@ class TradeReconciler:
         submission = self.run_submission_pass()
         orphans = self.run_orphan_sweep()
         poll = self.run_poll_pass()
+        position_refresh = self.run_position_refresh_pass()
         summary = {
             "submission": submission,
             "orphan_sweep": orphans,
             "poll": poll,
+            "position_refresh": position_refresh,
             "run_at": datetime.now(UTC).isoformat(),
         }
         logger.info("Reconcile trades summary: %s", summary)

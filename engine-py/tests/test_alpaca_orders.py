@@ -91,6 +91,43 @@ def test_get_position_returns_position_when_found() -> None:
     assert position["qty"] == "10"
 
 
+def test_get_all_positions_returns_the_full_list_in_one_call() -> None:
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        assert request.url.path == "/v2/positions"
+        return httpx.Response(
+            200,
+            json=[
+                {"symbol": "AAPL", "qty": "10"},
+                {"symbol": "ABNB", "qty": "56"},
+            ],
+        )
+
+    adapter = _adapter(handler)
+    positions = adapter.get_all_positions()
+
+    assert calls["count"] == 1
+    assert {p["symbol"] for p in positions} == {"AAPL", "ABNB"}
+
+
+def test_get_all_positions_retries_on_5xx_then_succeeds() -> None:
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            return httpx.Response(503)
+        return httpx.Response(200, json=[{"symbol": "AAPL", "qty": "10"}])
+
+    adapter = _adapter(handler)
+    positions = adapter.get_all_positions()
+
+    assert positions == [{"symbol": "AAPL", "qty": "10"}]
+    assert attempts["count"] == 3
+
+
 def test_retries_on_5xx_then_succeeds() -> None:
     attempts = {"count": 0}
 

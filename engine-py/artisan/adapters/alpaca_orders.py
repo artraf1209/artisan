@@ -84,3 +84,16 @@ class AlpacaOrdersAdapter:
             return None
         response.raise_for_status()
         return response.json()
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_error),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        stop=stop_after_attempt(4),
+        reraise=True,
+    )
+    def get_all_positions(self) -> list[dict]:
+        """Every open position in one call -- used for periodic reconciliation so
+        refreshing N positions costs one request, not N."""
+        response = self.http_client.get(f"{self.base_url}/v2/positions", headers=self.headers)
+        response.raise_for_status()
+        return response.json()
