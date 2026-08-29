@@ -70,36 +70,58 @@ async function invokeExecuteTrade(
     throw new RouteError('Supabase function credentials are not configured.', 500)
   }
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/execute-trade`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${serviceRoleKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      trade_intent_id: tradeIntentId,
-      ...(overrides ? { overrides } : {}),
-    }),
-  })
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/execute-trade`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        trade_intent_id: tradeIntentId,
+        ...(overrides ? { overrides } : {}),
+      }),
+    })
 
-  const body = (await response.json().catch(() => null)) as
-    | {
-        error?: string
-        error_type?: string
-        status?: string
-        execution_status?: string
-      }
-    | null
+    const body = (await response.json().catch(() => null)) as
+      | {
+          error?: string
+          error_type?: string
+          status?: string
+          execution_status?: string
+        }
+      | null
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    body,
+    return {
+      ok: response.ok,
+      status: response.status,
+      body,
+      networkFailure: false as const,
+    }
+  } catch (error) {
+    // The fetch() call itself threw (network failure, DNS issue, edge-function cold
+    // start timeout) -- distinct from execute-trade responding with a non-ok status.
+    // Without this, the trade_intent stays at 'pending' forever with no audit trail.
+    return {
+      ok: false,
+      status: 0,
+      body: null,
+      networkFailure: true as const,
+      networkError: error instanceof Error ? error.message : String(error),
+    }
   }
 }
 
-async function updateTradeIntentStatus(supabase: any, tradeIntentId: string, status: string) {
-  const { error } = await supabase.from('trade_intents').update({ status }).eq('id', tradeIntentId)
+async function updateTradeIntentStatus(
+  supabase: any,
+  tradeIntentId: string,
+  status: string,
+  extraFields?: Record<string, unknown>,
+) {
+  const { error } = await supabase
+    .from('trade_intents')
+    .update({ status, ...extraFields })
+    .eq('id', tradeIntentId)
   if (error) {
     throw new RouteError(error.message, 500)
   }
@@ -237,7 +259,9 @@ export async function POST(
           side: 'buy',
           quantity: shares,
           dollar_value: round(shares * entryPrice, 2),
-          order_type: 'market',
+          order_type: 'limit',
+          limit_price: round(entryPrice, 4),
+          order_class: 'bracket',
           stop_price: round(stopPrice, 4),
           status: 'pending',
         })
@@ -264,11 +288,31 @@ export async function POST(
 
       const execution = await invokeExecuteTrade(tradeIntent.id, overrides)
       if (!execution.ok) {
+        if (execution.networkFailure) {
+          // execute-trade's atomic claim never resolved -- the intent is otherwise
+          // stuck at 'pending' forever. 'failed' (not 'rejected') so the reconciliation
+          // job's retry-under-cap logic picks it up automatically.
+          await updateTradeIntentStatus(supabase, tradeIntent.id, 'failed', { retry_count: 1 })
+          await writeAuditLog(supabase, {
+            action: 'execute_network_failure',
+            entityId: tradeIntent.id,
+            payload: {
+              recommendation_id: recommendation.id,
+              symbol: recommendation.symbol,
+              error: execution.networkError,
+            },
+          })
+
+          return NextResponse.json({ error: execution.networkError ?? 'Trade execution failed.' }, { status: 502 })
+        }
+
         const errorType = execution.body?.error_type ?? 'other'
         const errorMessage = execution.body?.error ?? 'Trade execution failed.'
 
         if (errorType === 'market_closed') {
-          await updateTradeIntentStatus(supabase, tradeIntent.id, 'scheduled')
+          // execute-trade already resolved the intent's status itself (to 'scheduled')
+          // as part of its atomic claim -- only the route-specific audit context is
+          // ours to add here.
           await writeAuditLog(supabase, {
             action: 'execute_scheduled',
             entityId: tradeIntent.id,
@@ -286,7 +330,6 @@ export async function POST(
           })
         }
 
-        await updateTradeIntentStatus(supabase, tradeIntent.id, 'rejected')
         await writeAuditLog(supabase, {
           action: 'execute_rejected',
           entityId: tradeIntent.id,
@@ -425,7 +468,9 @@ export async function POST(
           side: 'buy',
           quantity: sizing.shares,
           dollar_value: round(sizing.shares * entryPrice, 2),
-          order_type: 'market',
+          order_type: 'limit',
+          limit_price: round(entryPrice, 4),
+          order_class: 'bracket',
           stop_price: round(stopPrice, 4),
           status: 'pending',
           overrides: {
@@ -461,11 +506,25 @@ export async function POST(
       })
 
       if (!execution.ok) {
+        if (execution.networkFailure) {
+          await updateTradeIntentStatus(supabase, tradeIntent.id, 'failed', { retry_count: 1 })
+          await writeAuditLog(supabase, {
+            action: 'execute_network_failure',
+            entityId: tradeIntent.id,
+            payload: {
+              position_review_id: review.id,
+              symbol: review.symbol,
+              error: execution.networkError,
+            },
+          })
+
+          return NextResponse.json({ error: execution.networkError ?? 'Trade execution failed.' }, { status: 502 })
+        }
+
         const errorType = execution.body?.error_type ?? 'other'
         const errorMessage = execution.body?.error ?? 'Trade execution failed.'
 
         if (errorType === 'market_closed') {
-          await updateTradeIntentStatus(supabase, tradeIntent.id, 'scheduled')
           await writeAuditLog(supabase, {
             action: 'execute_scheduled',
             entityId: tradeIntent.id,
@@ -483,7 +542,6 @@ export async function POST(
           })
         }
 
-        await updateTradeIntentStatus(supabase, tradeIntent.id, 'rejected')
         await writeAuditLog(supabase, {
           action: 'execute_rejected',
           entityId: tradeIntent.id,

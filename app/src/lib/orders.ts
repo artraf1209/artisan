@@ -29,6 +29,7 @@ export interface OrderHistoryRow {
   id: string
   symbol: string
   side: string
+  leg_type: 'entry' | 'stop_loss' | 'take_profit' | null
   execution_status: string
   intent_status: string | null
   filled_qty: number | null
@@ -93,7 +94,7 @@ export async function loadOrders(supabase: any, filters: OrdersFilters = {}): Pr
   const { data: executionRows, error: executionsError } = await supabase
     .from('trade_executions')
     .select(
-      'id, status, filled_qty, filled_price, filled_at, created_at, trade_intents(id, signal_id, symbol, side, quantity, stop_price, status, overrides)',
+      'id, status, filled_qty, filled_price, filled_at, created_at, leg_type, trade_intents(id, signal_id, symbol, side, quantity, stop_price, status, overrides)',
     )
     .order('created_at', { ascending: false })
     .limit(limit)
@@ -227,10 +228,16 @@ export async function loadOrders(supabase: any, filters: OrdersFilters = {}): Pr
         : `recommendation:${intent.signal_id}`
     const outcome = selectBestOutcome(outcomesByKey.get(outcomeKey) ?? [])
 
+    // Exit legs (stop-loss/take-profit) always close a buy-side bracket entry with a
+    // sell -- sourcing side from the parent intent would mislabel these as 'buy'.
+    const legType = (execution.leg_type as OrderHistoryRow['leg_type']) ?? null
+    const side = legType === 'stop_loss' || legType === 'take_profit' ? 'sell' : intent.side
+
     rows.push({
       id: String(execution.id),
       symbol: intent.symbol,
-      side: intent.side,
+      side,
+      leg_type: legType,
       execution_status: String(execution.status ?? 'pending'),
       intent_status: intent.status ?? null,
       filled_qty: toNumber(execution.filled_qty) ?? toNumber(intent.quantity),

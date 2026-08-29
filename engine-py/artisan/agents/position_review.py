@@ -5,6 +5,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
+
 from artisan.agents.base import (
     QUERY_DECISION_HISTORY_TOOL,
     SUBMIT_POSITION_REVIEWS_TOOL,
@@ -17,6 +19,7 @@ from artisan.agents.base import (
     validate_required_fields,
 )
 from artisan.agents.orchestrator import compute_available_risk_budget, write_agent_analysis
+from artisan.config import settings
 from artisan.db.client import get_client
 from artisan.risk.sizing import check_portfolio_vetos
 from artisan.risk.trailing_stop import apply_trailing_stop_ratchet
@@ -37,6 +40,83 @@ VALID_ACTIONS = ("hold", "trim", "add", "close", "tighten_stop", "widen_target")
 # and doesn't touch risk. Only ADD (and any stop-loosening, guarded separately)
 # requires human approval.
 AUTO_APPLIED_ACTIONS = ("hold", "close", "trim", "tighten_stop", "widen_target")
+
+
+def write_audit_log(
+    db: Any,
+    *,
+    actor: str,
+    action: str,
+    entity: str,
+    payload: dict[str, Any],
+    entity_id: str | None = None,
+) -> None:
+    db.table("audit_log").insert(
+        {"actor": actor, "action": action, "entity": entity, "entity_id": entity_id, "payload": payload}
+    ).execute()
+
+
+def _call_execute_trade_action(payload: dict[str, Any]) -> bool:
+    """Calls execute-trade's position-management actions (replace_leg /
+    cancel_position_orders) -- engine-py never calls Alpaca directly, only the
+    edge function, same as every other engine-py caller of execute-trade."""
+    try:
+        response = httpx.post(
+            f"{settings.supabase_url}/functions/v1/execute-trade",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.supabase_service_role_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15.0,
+        )
+        result = response.json()
+        return bool(response.is_success and result.get("success"))
+    except Exception:
+        logger.exception("execute-trade action call failed: %s", payload.get("action"))
+        return False
+
+
+def _sync_stop_at_broker(db: Any, position: dict[str, Any], new_stop_price: float) -> bool:
+    """Replaces the resting stop-loss order at the broker (if one exists for this
+    position) before persisting the new stop_price locally, so DB and broker never
+    diverge independently. Returns False (and leaves the local stop_price unchanged --
+    the existing, untightened stop stays active, a benign failure mode) if the broker
+    call fails; used by both the daily ratchet and the LLM-driven tighten_stop action."""
+    if position.get("stop_order_id"):
+        if not _call_execute_trade_action(
+            {"action": "replace_leg", "position_id": position["id"], "leg": "stop_loss", "new_price": new_stop_price}
+        ):
+            write_audit_log(
+                db, actor="position-review", action="replace_leg_failed", entity="portfolio_positions",
+                entity_id=position["id"], payload={"symbol": position["symbol"], "leg": "stop_loss", "new_price": new_stop_price},
+            )
+            return False
+    db.table("portfolio_positions").update({"stop_price": new_stop_price}).eq("id", position["id"]).execute()
+    return True
+
+
+def _sync_target_at_broker(db: Any, position: dict[str, Any], new_target_price: float) -> bool:
+    if position.get("target_order_id"):
+        if not _call_execute_trade_action(
+            {"action": "replace_leg", "position_id": position["id"], "leg": "take_profit", "new_price": new_target_price}
+        ):
+            write_audit_log(
+                db, actor="position-review", action="replace_leg_failed", entity="portfolio_positions",
+                entity_id=position["id"], payload={"symbol": position["symbol"], "leg": "take_profit", "new_price": new_target_price},
+            )
+            return False
+    db.table("portfolio_positions").update({"target_price": new_target_price}).eq("id", position["id"]).execute()
+    return True
+
+
+def _cancel_orders_at_broker(position: dict[str, Any]) -> bool:
+    """Cancels the position's resting bracket legs (canceling either one cancels the
+    whole group) before a CLOSE's independent sell is submitted -- otherwise a stale
+    stop/target order could still fill after the position is already closed."""
+    if not (position.get("stop_order_id") or position.get("target_order_id") or position.get("entry_order_id")):
+        return True  # nothing resting, nothing to cancel
+    return _call_execute_trade_action({"action": "cancel_position_orders", "position_id": position["id"]})
 
 
 def _latest_price(db: Any, symbol: str) -> float | None:
@@ -86,7 +166,10 @@ def load_positions_with_ratchet(db: Any, strategy_params: StrategyParams, now: d
     evaluates the current, already-tightened stop rather than a stale one."""
     positions = (
         db.table("portfolio_positions")
-        .select("id,account_id,symbol,quantity,avg_entry_price,stop_price,target_price,signal_id,opened_at")
+        .select(
+            "id,account_id,symbol,quantity,avg_entry_price,stop_price,target_price,signal_id,opened_at,"
+            "entry_order_id,stop_order_id,target_order_id"
+        )
         .execute()
         .data
     )
@@ -119,9 +202,9 @@ def load_positions_with_ratchet(db: Any, strategy_params: StrategyParams, now: d
             strategy_params,
         )
         if ratchet_result is not None:
-            db.table("portfolio_positions").update({"stop_price": ratchet_result["new_stop_price"]}).eq("id", position["id"]).execute()
-            position["stop_price"] = ratchet_result["new_stop_price"]
-            position["_stop_ratcheted"] = True
+            if _sync_stop_at_broker(db, position, ratchet_result["new_stop_price"]):
+                position["stop_price"] = ratchet_result["new_stop_price"]
+                position["_stop_ratcheted"] = True
 
     return positions
 
@@ -225,10 +308,9 @@ def _apply_day30_override(review: dict[str, Any], position: dict[str, Any], stra
 
 def _create_sell_trade_intent(db: Any, position: dict[str, Any]) -> dict[str, Any]:
     """CLOSE/TRIM are risk-reducing and auto-approved (spec §10.2) -- creates the
-    trade_intent directly rather than routing through /queue. Actual broker
-    execution (and updating portfolio_positions/decision_outcomes on fill) is
-    execute-trade's job (v2-15), which is extended to pick up engine-created
-    sell intents alongside user-approved ones."""
+    trade_intent directly rather than routing through /queue, at status='scheduled'
+    so the reconciliation job's submission pass (which polls exactly that status)
+    picks it up and calls execute-trade -- same path user-approved intents use."""
     recommendation = position.get("_recommendation") or {}
     row = {
         "signal_id": recommendation.get("id"),
@@ -238,7 +320,7 @@ def _create_sell_trade_intent(db: Any, position: dict[str, Any]) -> dict[str, An
         "quantity": position["quantity"],
         "dollar_value": (position.get("current_price") or position["avg_entry_price"]) * position["quantity"],
         "order_type": "market",
-        "status": "pending",
+        "status": "scheduled",
     }
     return db.table("trade_intents").insert(row).execute().data[0]
 
@@ -274,9 +356,14 @@ def _post_process_review(
     elif action == "tighten_stop":
         new_stop = review.get("suggested_new_stop")
         if new_stop is not None and new_stop > position["stop_price"]:
-            db.table("portfolio_positions").update({"stop_price": new_stop}).eq("id", position["id"]).execute()
-            position["stop_price"] = new_stop
-            review_note = f"stop tightened to {new_stop}"
+            if _sync_stop_at_broker(db, position, new_stop):
+                position["stop_price"] = new_stop
+                review_note = f"stop tightened to {new_stop}"
+            else:
+                review_note = (
+                    f"tighten_stop to {new_stop} decided but the broker-side replace failed; "
+                    "existing stop remains active, will retry next run"
+                )
         else:
             logger.warning(
                 "tighten_stop on %s had no valid (tighter) suggested_new_stop (%s vs current %s); no-op",
@@ -287,16 +374,31 @@ def _post_process_review(
     elif action == "widen_target":
         new_target = review.get("suggested_new_target")
         if new_target is not None and position.get("target_price") is not None and new_target > position["target_price"]:
-            db.table("portfolio_positions").update({"target_price": new_target}).eq("id", position["id"]).execute()
-            position["target_price"] = new_target
-            review_note = f"target widened to {new_target}"
+            if _sync_target_at_broker(db, position, new_target):
+                position["target_price"] = new_target
+                review_note = f"target widened to {new_target}"
+            else:
+                review_note = (
+                    f"widen_target to {new_target} decided but the broker-side replace failed; "
+                    "existing target remains active, will retry next run"
+                )
         else:
             review_note = "widen_target requested but no valid wider target provided; no change applied"
 
     elif action in ("close", "trim"):
         if action == "close":
-            intent = _create_sell_trade_intent(db, position)
-            review_note = f"close auto-approved; trade_intent {intent['id']} created for execution"
+            if _cancel_orders_at_broker(position):
+                intent = _create_sell_trade_intent(db, position)
+                review_note = f"close auto-approved; trade_intent {intent['id']} created for execution"
+            else:
+                write_audit_log(
+                    db, actor="position-review", action="cancel_position_orders_failed",
+                    entity="portfolio_positions", entity_id=position["id"], payload={"symbol": position["symbol"]},
+                )
+                review_note = (
+                    "close decided but canceling the resting bracket legs at the broker failed; "
+                    "no trade_intent created this run -- will be re-evaluated next run"
+                )
         else:
             review_note = "trim auto-approved (risk-reducing); share count not specified by the agent, no trade_intent created"
 

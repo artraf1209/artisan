@@ -2,29 +2,37 @@ import { createClient } from '@supabase/supabase-js'
 
 type OrderSide = 'buy' | 'sell'
 type OrderType = 'market' | 'limit'
+type OrderClass = 'simple' | 'bracket'
+type LegType = 'stop_loss' | 'take_profit'
 type ErrorType = 'market_closed' | 'insufficient_balance' | 'other'
 
 interface ExecuteTradePayload {
-  trade_intent_id: string
+  action?: 'replace_leg' | 'cancel_position_orders'
+  trade_intent_id?: string
   overrides?: {
     shares?: number
     stop_price?: number
     target_price?: number
   }
+  position_id?: string
+  leg?: LegType
+  new_price?: number
 }
 
 interface TradeIntentRow {
   id: string
-  signal_id: string
+  signal_id: string | null
   account_id: string
   symbol: string
   side: OrderSide
   quantity: number | string
   dollar_value: number | string
   order_type: OrderType
+  order_class: OrderClass
   limit_price: number | string | null
   stop_price: number | string | null
   status: string
+  retry_count: number
   overrides?: Record<string, unknown> | null
 }
 
@@ -50,6 +58,7 @@ interface StrategyParams {
 }
 
 interface PortfolioPositionRow {
+  id: string
   account_id: string
   symbol: string
   quantity: number | string
@@ -57,6 +66,9 @@ interface PortfolioPositionRow {
   stop_price: number | string | null
   target_price?: number | string | null
   signal_id?: string | null
+  entry_order_id?: string | null
+  stop_order_id?: string | null
+  target_order_id?: string | null
 }
 
 interface AssetRow {
@@ -95,6 +107,7 @@ interface CandidatePosition {
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 const CORRELATION_BREACH_THRESHOLD = 0.7
 const CORRELATION_MIN_OBSERVATIONS = 10
+const MAX_SUBMISSION_RETRIES = 3
 
 class TradeError extends Error {
   constructor(
@@ -162,14 +175,23 @@ function classifyBrokerError(raw: string): ErrorType {
   return 'other'
 }
 
+function alpacaHeaders(): Record<string, string> {
+  return {
+    'APCA-API-KEY-ID': Deno.env.get('ALPACA_API_KEY') ?? '',
+    'APCA-API-SECRET-KEY': Deno.env.get('ALPACA_API_SECRET') ?? '',
+    'Content-Type': 'application/json',
+  }
+}
+
+function alpacaBaseUrl(): string {
+  return (Deno.env.get('ALPACA_BASE_URL') ?? 'https://paper-api.alpaca.markets').replace(/\/$/, '')
+}
+
 async function alpacaRequest(path: string, init: RequestInit): Promise<Response> {
-  const baseUrl = (Deno.env.get('ALPACA_BASE_URL') ?? 'https://paper-api.alpaca.markets').replace(/\/$/, '')
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetch(`${alpacaBaseUrl()}${path}`, {
     ...init,
     headers: {
-      'APCA-API-KEY-ID': Deno.env.get('ALPACA_API_KEY') ?? '',
-      'APCA-API-SECRET-KEY': Deno.env.get('ALPACA_API_SECRET') ?? '',
-      'Content-Type': 'application/json',
+      ...alpacaHeaders(),
       ...(init.headers ?? {}),
     },
   })
@@ -188,14 +210,9 @@ async function fetchAlpacaAccount(): Promise<AlpacaAccount> {
 }
 
 async function fetchAlpacaPosition(symbol: string): Promise<AlpacaPosition | null> {
-  const baseUrl = (Deno.env.get('ALPACA_BASE_URL') ?? 'https://paper-api.alpaca.markets').replace(/\/$/, '')
-  const response = await fetch(`${baseUrl}/v2/positions/${symbol}`, {
+  const response = await fetch(`${alpacaBaseUrl()}/v2/positions/${symbol}`, {
     method: 'GET',
-    headers: {
-      'APCA-API-KEY-ID': Deno.env.get('ALPACA_API_KEY') ?? '',
-      'APCA-API-SECRET-KEY': Deno.env.get('ALPACA_API_SECRET') ?? '',
-      'Content-Type': 'application/json',
-    },
+    headers: alpacaHeaders(),
   })
 
   if (response.status === 404) {
@@ -207,6 +224,58 @@ async function fetchAlpacaPosition(symbol: string): Promise<AlpacaPosition | nul
   }
 
   return await response.json()
+}
+
+// Recovery path for an ambiguous order-placement failure (Part 2's item 2.5): confirms
+// whether an order that we lost the HTTP response for actually reached Alpaca.
+async function fetchAlpacaOrderByClientOrderId(clientOrderId: string): Promise<Record<string, unknown> | null> {
+  const response = await fetch(
+    `${alpacaBaseUrl()}/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`,
+    { method: 'GET', headers: alpacaHeaders() },
+  )
+
+  if (response.status === 404) {
+    return null
+  }
+  if (!response.ok) {
+    const text = await response.text()
+    throw new TradeError(text, response.status, classifyBrokerError(text))
+  }
+
+  return await response.json()
+}
+
+async function patchAlpacaOrder(orderId: string, body: Record<string, unknown>): Promise<boolean> {
+  const response = await fetch(`${alpacaBaseUrl()}/v2/orders/${orderId}`, {
+    method: 'PATCH',
+    headers: alpacaHeaders(),
+    body: JSON.stringify(body),
+  })
+
+  if (response.status === 404) {
+    return false
+  }
+  if (!response.ok) {
+    const text = await response.text()
+    throw new TradeError(text, response.status, classifyBrokerError(text))
+  }
+  return true
+}
+
+async function cancelAlpacaOrder(orderId: string): Promise<boolean> {
+  const response = await fetch(`${alpacaBaseUrl()}/v2/orders/${orderId}`, {
+    method: 'DELETE',
+    headers: alpacaHeaders(),
+  })
+
+  if (response.status === 404) {
+    return false
+  }
+  if (!response.ok && response.status !== 204) {
+    const text = await response.text()
+    throw new TradeError(text, response.status, classifyBrokerError(text))
+  }
+  return true
 }
 
 function computePositionSize(equity: number, entryPrice: number, stopPrice: number, params: StrategyParams['risk_params']) {
@@ -356,64 +425,139 @@ function checkPortfolioVetos(
   return triggered
 }
 
-function mapExecutionStatus(orderStatus: string | null | undefined): 'pending' | 'filled' | 'partial' | 'cancelled' | 'rejected' {
+// Every explicit Alpaca order status this system can observe, mapped to our own
+// execution-level vocabulary. `expired` covers every time-in-force-lapsed terminal
+// state (expired/done_for_day/stopped/suspended) — kept distinct from `cancelled`
+// since nothing in this system ever explicitly cancels an order; `expired` is the
+// *expected* outcome for an unfilled day order and needs to be distinguishable from
+// an actor-initiated cancellation for alerting/dashboard purposes.
+export function mapExecutionStatus(
+  orderStatus: string | null | undefined,
+): 'pending' | 'filled' | 'partial' | 'cancelled' | 'rejected' | 'expired' {
   const status = (orderStatus ?? 'pending').toLowerCase()
-  if (status === 'filled') {
-    return 'filled'
+  switch (status) {
+    case 'filled':
+      return 'filled'
+    case 'partially_filled':
+      return 'partial'
+    case 'rejected':
+      return 'rejected'
+    case 'canceled':
+    case 'cancelled':
+      return 'cancelled'
+    case 'expired':
+    case 'done_for_day':
+    case 'stopped':
+    case 'suspended':
+      return 'expired'
+    case 'new':
+    case 'accepted':
+    case 'pending_new':
+    case 'accepted_for_bidding':
+    case 'calculated':
+    case 'pending_cancel':
+    case 'pending_replace':
+      return 'pending'
+    default:
+      return 'pending'
   }
-  if (status === 'partially_filled') {
-    return 'partial'
-  }
-  if (status === 'rejected') {
-    return 'rejected'
-  }
-  if (status === 'cancelled' || status === 'canceled') {
-    return 'cancelled'
-  }
-  return 'pending'
 }
 
-function mapIntentStatus(executionStatus: ReturnType<typeof mapExecutionStatus>): 'submitted' | 'filled' | 'cancelled' | 'rejected' {
+// Derives the intent-level status from (execution_status, filled_qty) rather than
+// execution_status alone — an `expired` order with a nonzero fill is a distinct,
+// terminal `partial` state (a day order that ran out of time after partially filling),
+// not the same as a clean `expired` (nothing filled) or an open `submitted`.
+export function mapIntentStatus(
+  executionStatus: ReturnType<typeof mapExecutionStatus>,
+  filledQty: number | null,
+): 'submitted' | 'filled' | 'cancelled' | 'rejected' | 'expired' | 'partial' {
   if (executionStatus === 'filled') {
     return 'filled'
   }
-  if (executionStatus === 'cancelled' || executionStatus === 'rejected') {
+  if (executionStatus === 'rejected' || executionStatus === 'cancelled') {
     return executionStatus
   }
+  if (executionStatus === 'expired') {
+    return filledQty != null && filledQty > 0 ? 'partial' : 'expired'
+  }
+  // 'pending' or 'partial' (still open, more fills may come)
   return 'submitted'
 }
 
-async function loadTradeIntent(supabase: ReturnType<typeof createClient>, tradeIntentId: string) {
-  const { data: intent, error: intentError } = await supabase
+// Atomically claims a trade_intent for submission: only one concurrent invocation can
+// ever win this UPDATE for a given intent (row-locked at the DB level), which is what
+// actually prevents a second, duplicate live order — a plain SELECT-then-UPDATE has a
+// TOCTOU race that this closes.
+async function claimTradeIntent(
+  supabase: ReturnType<typeof createClient>,
+  tradeIntentId: string,
+): Promise<TradeIntentRow> {
+  const { data: claimed, error: claimError } = await supabase
     .from('trade_intents')
+    .update({ status: 'submitting', last_attempted_at: new Date().toISOString() })
+    .eq('id', tradeIntentId)
+    .or(`status.eq.pending,status.eq.scheduled,and(status.eq.failed,retry_count.lt.${MAX_SUBMISSION_RETRIES})`)
     .select('*')
+    .maybeSingle()
+
+  if (claimError) {
+    throw new TradeError(claimError.message, 500, 'other')
+  }
+  if (claimed) {
+    return claimed as TradeIntentRow
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from('trade_intents')
+    .select('id,status')
     .eq('id', tradeIntentId)
     .maybeSingle()
 
-  if (intentError) {
-    throw new TradeError(intentError.message, 500, 'other')
+  if (existingError) {
+    throw new TradeError(existingError.message, 500, 'other')
   }
-  if (!intent) {
+  if (!existing) {
     throw new TradeError('Trade intent not found.', 404, 'other')
   }
+  throw new TradeError(
+    `Trade intent ${tradeIntentId} is not in a submittable state (current status: ${existing.status}).`,
+    409,
+    'other',
+  )
+}
 
-  const { data: recommendation, error: recommendationError } = await supabase
+// Resolves a 'submitting' claim to its next status. Guarded on status='submitting' so
+// it only ever affects the claim this exact invocation is holding.
+async function resolveClaim(
+  supabase: ReturnType<typeof createClient>,
+  intentId: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabase
+    .from('trade_intents')
+    .update(fields)
+    .eq('id', intentId)
+    .eq('status', 'submitting')
+
+  if (error) {
+    throw new TradeError(error.message, 500, 'other')
+  }
+}
+
+async function loadRecommendationById(
+  supabase: ReturnType<typeof createClient>,
+  recommendationId: string,
+): Promise<RecommendationRow | null> {
+  const { data, error } = await supabase
     .from('recommendations')
     .select('id,strategy_id,symbol,status,entry_price,stop_price,target_price')
-    .eq('id', intent.signal_id)
+    .eq('id', recommendationId)
     .maybeSingle()
 
-  if (recommendationError) {
-    throw new TradeError(recommendationError.message, 500, 'other')
+  if (error) {
+    throw new TradeError(error.message, 500, 'other')
   }
-  if (!recommendation) {
-    throw new TradeError('Linked recommendation not found.', 404, 'other')
-  }
-
-  return {
-    intent: intent as TradeIntentRow,
-    recommendation: recommendation as RecommendationRow,
-  }
+  return (data as RecommendationRow | null) ?? null
 }
 
 async function loadStrategyParams(supabase: ReturnType<typeof createClient>, strategyId: string | null) {
@@ -548,23 +692,72 @@ async function persistOverrides(
   }
 }
 
+function buildOrderBody(
+  intent: TradeIntentRow,
+  quantity: number,
+  stopPrice: number | null,
+  targetPrice: number | null,
+): Record<string, unknown> {
+  const base = {
+    symbol: intent.symbol,
+    qty: String(quantity),
+    side: intent.side,
+    time_in_force: 'day',
+    client_order_id: intent.id,
+  }
+
+  if (intent.side === 'buy' && intent.order_class === 'bracket') {
+    return {
+      ...base,
+      type: 'limit',
+      limit_price: intent.limit_price,
+      order_class: 'bracket',
+      take_profit: { limit_price: targetPrice },
+      stop_loss: { stop_price: stopPrice },
+    }
+  }
+
+  return {
+    ...base,
+    type: intent.order_type ?? 'market',
+    ...(intent.order_type === 'limit' && intent.limit_price != null ? { limit_price: intent.limit_price } : {}),
+  }
+}
+
+// Distinguishes a bracket order's stop-loss leg (has stop_price) from its take-profit
+// leg (limit_price only, no stop_price) in Alpaca's `legs` array.
+function extractBracketLegs(order: Record<string, unknown> | null | undefined): {
+  stopLegId: string | null
+  targetLegId: string | null
+} {
+  const legs = Array.isArray((order as { legs?: unknown[] })?.legs) ? ((order as { legs: any[] }).legs) : []
+  const stopLeg = legs.find((leg) => toNumber(leg?.stop_price) != null)
+  const targetLeg = legs.find((leg) => toNumber(leg?.stop_price) == null && toNumber(leg?.limit_price) != null)
+  return {
+    stopLegId: stopLeg?.id ?? null,
+    targetLegId: targetLeg?.id ?? null,
+  }
+}
+
 async function syncPortfolioPosition(
   supabase: ReturnType<typeof createClient>,
   {
     intent,
     recommendation,
+    order,
     effectiveStopPrice,
     effectiveTargetPrice,
   }: {
     intent: TradeIntentRow
-    recommendation: RecommendationRow
+    recommendation: RecommendationRow | null
+    order: Record<string, unknown> | null
     effectiveStopPrice: number | null
     effectiveTargetPrice: number | null
   },
 ) {
   const { data: existingPosition, error: existingPositionError } = await supabase
     .from('portfolio_positions')
-    .select('signal_id,stop_price,target_price')
+    .select('signal_id,stop_price,target_price,entry_order_id,stop_order_id,target_order_id')
     .eq('account_id', intent.account_id)
     .eq('symbol', intent.symbol)
     .maybeSingle()
@@ -602,6 +795,12 @@ async function syncPortfolioPosition(
     return
   }
 
+  // Bracket exit legs typically don't get independent, queryable order IDs until the
+  // entry leg actually fills — if they're not present yet on this order response, these
+  // stay null and the reconciliation job's poll pass is responsible for filling them in
+  // once it independently discovers the entry fill.
+  const { stopLegId, targetLegId } = intent.order_class === 'bracket' ? extractBracketLegs(order) : { stopLegId: null, targetLegId: null }
+
   const row = {
     account_id: intent.account_id,
     symbol: intent.symbol,
@@ -611,7 +810,10 @@ async function syncPortfolioPosition(
     unrealized_pnl: toNumber(currentPosition.unrealized_pl),
     stop_price: effectiveStopPrice ?? toNumber(existingPosition?.stop_price),
     target_price: effectiveTargetPrice ?? toNumber(existingPosition?.target_price),
-    signal_id: existingPosition?.signal_id ?? recommendation.id,
+    signal_id: existingPosition?.signal_id ?? recommendation?.id ?? null,
+    entry_order_id: (intent.order_class === 'bracket' ? (order?.id as string | undefined) : undefined) ?? existingPosition?.entry_order_id ?? null,
+    stop_order_id: stopLegId ?? existingPosition?.stop_order_id ?? null,
+    target_order_id: targetLegId ?? existingPosition?.target_order_id ?? null,
     updated_at: new Date().toISOString(),
   }
 
@@ -697,19 +899,120 @@ async function updatePositionReviewOutcome(
   }
 }
 
-Deno.serve(async (req): Promise<Response> => {
+async function loadPositionById(
+  supabase: ReturnType<typeof createClient>,
+  positionId: string,
+): Promise<PortfolioPositionRow> {
+  const { data, error } = await supabase
+    .from('portfolio_positions')
+    .select('*')
+    .eq('id', positionId)
+    .maybeSingle()
+
+  if (error) {
+    throw new TradeError(error.message, 500, 'other')
+  }
+  if (!data) {
+    throw new TradeError('Position not found.', 404, 'other')
+  }
+  return data as PortfolioPositionRow
+}
+
+// { action: 'replace_leg', position_id, leg, new_price } — PATCHes the resting
+// stop-loss/take-profit order at Alpaca and only updates the DB once the broker
+// confirms, so DB and broker never diverge independently.
+async function handleReplaceLeg(
+  supabase: ReturnType<typeof createClient>,
+  payload: ExecuteTradePayload,
+): Promise<Response> {
+  if (!payload.position_id?.trim()) {
+    throw new TradeError('position_id is required.', 400, 'other')
+  }
+  if (payload.leg !== 'stop_loss' && payload.leg !== 'take_profit') {
+    throw new TradeError("leg must be 'stop_loss' or 'take_profit'.", 400, 'other')
+  }
+  const newPrice = toNumber(payload.new_price)
+  if (newPrice == null || newPrice <= 0) {
+    throw new TradeError('new_price must be a positive number.', 400, 'other')
+  }
+
+  const position = await loadPositionById(supabase, payload.position_id.trim())
+  const orderId = payload.leg === 'stop_loss' ? position.stop_order_id : position.target_order_id
+  if (!orderId) {
+    return jsonResponse(
+      { success: false, error: `Position has no live ${payload.leg} order to replace.`, error_type: 'other' },
+      404,
+    )
+  }
+
+  const patchBody = payload.leg === 'stop_loss' ? { stop_price: newPrice } : { limit_price: newPrice }
+  const stillLive = await patchAlpacaOrder(orderId, patchBody)
+
+  const positionUpdate: Record<string, unknown> = {}
+  if (payload.leg === 'stop_loss') {
+    positionUpdate.stop_price = newPrice
+    if (!stillLive) positionUpdate.stop_order_id = null
+  } else {
+    positionUpdate.target_price = newPrice
+    if (!stillLive) positionUpdate.target_order_id = null
+  }
+
+  const { error } = await supabase.from('portfolio_positions').update(positionUpdate).eq('id', position.id)
+  if (error) {
+    throw new TradeError(error.message, 500, 'other')
+  }
+
+  return jsonResponse({ success: true, replaced: stillLive })
+}
+
+// { action: 'cancel_position_orders', position_id } — cancels one resting bracket leg
+// (which cancels the whole group per Alpaca's OCO behavior), freeing the shares before
+// an independent close order is submitted.
+async function handleCancelPositionOrders(
+  supabase: ReturnType<typeof createClient>,
+  payload: ExecuteTradePayload,
+): Promise<Response> {
+  if (!payload.position_id?.trim()) {
+    throw new TradeError('position_id is required.', 400, 'other')
+  }
+
+  const position = await loadPositionById(supabase, payload.position_id.trim())
+  const orderIdToCancel = position.stop_order_id ?? position.target_order_id ?? position.entry_order_id
+
+  let cancelled = false
+  if (orderIdToCancel) {
+    cancelled = await cancelAlpacaOrder(orderIdToCancel)
+  }
+
+  const { error } = await supabase
+    .from('portfolio_positions')
+    .update({ entry_order_id: null, stop_order_id: null, target_order_id: null })
+    .eq('id', position.id)
+
+  if (error) {
+    throw new TradeError(error.message, 500, 'other')
+  }
+
+  return jsonResponse({ success: true, cancelled })
+}
+
+async function handlePlaceOrder(
+  supabase: ReturnType<typeof createClient>,
+  payload: ExecuteTradePayload,
+): Promise<Response> {
+  if (!payload.trade_intent_id?.trim()) {
+    throw new TradeError('trade_intent_id is required.', 400, 'other')
+  }
+
+  const intent = await claimTradeIntent(supabase, payload.trade_intent_id.trim())
+
+  let order: Record<string, unknown>
   try {
-    const payload = (await req.json()) as ExecuteTradePayload
-    if (!payload.trade_intent_id?.trim()) {
-      throw new TradeError('trade_intent_id is required.', 400, 'other')
+    const recommendation = intent.signal_id ? await loadRecommendationById(supabase, intent.signal_id) : null
+    if (intent.signal_id && !recommendation) {
+      throw new TradeError('Linked recommendation not found.', 404, 'other')
     }
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-    )
-
-    const { intent, recommendation } = await loadTradeIntent(supabase, payload.trade_intent_id.trim())
     const positionReviewSourceId =
       intent.overrides?.source_type === 'position_review' && typeof intent.overrides?.source_id === 'string'
         ? intent.overrides.source_id
@@ -723,7 +1026,7 @@ Deno.serve(async (req): Promise<Response> => {
       if (quantity && quantity > 0 && dollarValue != null) {
         return dollarValue / quantity
       }
-      return toNumber(recommendation.entry_price)
+      return toNumber(recommendation?.entry_price)
     })()
 
     if (entryPrice == null || entryPrice <= 0) {
@@ -731,8 +1034,8 @@ Deno.serve(async (req): Promise<Response> => {
     }
 
     let effectiveQuantity = toPositiveInteger(intent.quantity, 'trade_intent.quantity')
-    let effectiveStopPrice = toNumber(intent.stop_price) ?? toNumber(recommendation.stop_price)
-    let effectiveTargetPrice = toNumber(recommendation.target_price)
+    let effectiveStopPrice = toNumber(intent.stop_price) ?? toNumber(recommendation?.stop_price)
+    let effectiveTargetPrice = toNumber(recommendation?.target_price)
 
     if (hasOverrides) {
       if (requestedOverrides.shares != null) {
@@ -754,7 +1057,7 @@ Deno.serve(async (req): Promise<Response> => {
 
       const account = await fetchAlpacaAccount()
       const equity = toNumber(account.equity, 0) ?? 0
-      const strategy = await loadStrategyParams(supabase, recommendation.strategy_id)
+      const strategy = await loadStrategyParams(supabase, recommendation?.strategy_id ?? null)
       const sizing = computePositionSize(equity, entryPrice, effectiveStopPrice, strategy.risk_params)
       if (effectiveQuantity > sizing.shares) {
         throw new TradeError(
@@ -809,6 +1112,15 @@ Deno.serve(async (req): Promise<Response> => {
       }, intent.overrides)
     }
 
+    if (intent.side === 'buy' && intent.order_class === 'bracket') {
+      if (effectiveStopPrice == null || effectiveTargetPrice == null) {
+        throw new TradeError('Bracket orders require both a stop price and a target price.', 400, 'other')
+      }
+      if (intent.limit_price == null) {
+        throw new TradeError('Bracket orders require a limit price for the entry leg.', 400, 'other')
+      }
+    }
+
     const account = await fetchAlpacaAccount()
     const buyingPower = toNumber(account.buying_power, 0) ?? 0
     const orderNotional = round(effectiveQuantity * entryPrice, 2)
@@ -816,33 +1128,68 @@ Deno.serve(async (req): Promise<Response> => {
       throw new TradeError('Insufficient buying power for this order.', 400, 'insufficient_balance')
     }
 
-    const orderResponse = await alpacaRequest('/v2/orders', {
-      method: 'POST',
-      body: JSON.stringify({
-        symbol: intent.symbol,
-        qty: String(effectiveQuantity),
-        side: intent.side,
-        type: intent.order_type ?? 'market',
-        time_in_force: 'day',
-        ...(intent.order_type === 'limit' && intent.limit_price != null
-          ? { limit_price: intent.limit_price }
-          : {}),
-      }),
-    })
-    const order = await orderResponse.json()
-    const executionStatus = mapExecutionStatus(order.status)
-    const intentStatus = mapIntentStatus(executionStatus)
+    try {
+      const orderResponse = await alpacaRequest('/v2/orders', {
+        method: 'POST',
+        body: JSON.stringify(buildOrderBody(intent, effectiveQuantity, effectiveStopPrice, effectiveTargetPrice)),
+      })
+      order = await orderResponse.json()
+    } catch (postError) {
+      if (postError instanceof TradeError) {
+        // A real broker-side rejection (market_closed, invalid symbol, etc.) — not
+        // ambiguous. Let the outer catch classify it (market_closed -> scheduled,
+        // everything else -> rejected).
+        throw postError
+      }
+
+      // The fetch() call itself threw (network failure) — we genuinely don't know
+      // whether the order reached Alpaca. Handle this entirely here (not via the
+      // outer catch) since the resolution differs from every other error case.
+      let recovered: Record<string, unknown> | null | undefined
+      try {
+        recovered = await fetchAlpacaOrderByClientOrderId(intent.id)
+      } catch {
+        recovered = undefined
+      }
+
+      if (recovered === undefined) {
+        // Can't confirm either way. Do not guess — leave the claim at 'submitting'
+        // for the reconciliation job's orphan sweep to resolve later.
+        return jsonResponse(
+          {
+            success: false,
+            error: 'Order submission failed and broker state could not be confirmed; left for reconciliation.',
+            error_type: 'other',
+            trade_intent_id: intent.id,
+          },
+          202,
+        )
+      }
+      if (recovered === null) {
+        await resolveClaim(supabase, intent.id, { status: 'failed', retry_count: intent.retry_count + 1 })
+        return jsonResponse(
+          { success: false, error: 'Order was not accepted by the broker.', error_type: 'other' },
+          502,
+        )
+      }
+      order = recovered
+    }
+
+    const executionStatus = mapExecutionStatus(order.status as string | undefined)
+    const filledQty = toNumber(order.filled_qty)
+    const intentStatus = mapIntentStatus(executionStatus, filledQty)
 
     const { data: execution, error: executionError } = await supabase
       .from('trade_executions')
       .insert({
         intent_id: intent.id,
-        broker_order_id: order.id ?? null,
-        filled_qty: toNumber(order.filled_qty),
+        broker_order_id: (order.id as string | undefined) ?? null,
+        filled_qty: filledQty,
         filled_price: toNumber(order.filled_avg_price),
-        filled_at: order.filled_at ?? order.updated_at ?? null,
+        filled_at: (order.filled_at as string | undefined) ?? (order.updated_at as string | undefined) ?? null,
         fees: 0,
         status: executionStatus,
+        leg_type: intent.order_class === 'bracket' ? 'entry' : null,
         raw_response: order,
       })
       .select('id,status,filled_price,broker_order_id')
@@ -852,30 +1199,24 @@ Deno.serve(async (req): Promise<Response> => {
       throw new TradeError(executionError?.message ?? 'Failed to persist trade execution.', 500, 'other')
     }
 
-    const { error: intentUpdateError } = await supabase
-      .from('trade_intents')
-      .update({
-        status: intentStatus,
-        quantity: effectiveQuantity,
-        dollar_value: round(effectiveQuantity * entryPrice, 2),
-        stop_price: effectiveStopPrice == null ? null : round(effectiveStopPrice, 4),
-      })
-      .eq('id', intent.id)
-
-    if (intentUpdateError) {
-      throw new TradeError(intentUpdateError.message, 500, 'other')
-    }
+    await resolveClaim(supabase, intent.id, {
+      status: intentStatus,
+      quantity: effectiveQuantity,
+      dollar_value: round(effectiveQuantity * entryPrice, 2),
+      stop_price: effectiveStopPrice == null ? null : round(effectiveStopPrice, 4),
+    })
 
     if (executionStatus === 'filled' || executionStatus === 'partial') {
       await syncPortfolioPosition(supabase, {
         intent,
         recommendation,
+        order,
         effectiveStopPrice: effectiveStopPrice == null ? null : round(effectiveStopPrice, 4),
         effectiveTargetPrice: effectiveTargetPrice == null ? null : round(effectiveTargetPrice, 4),
       })
     }
 
-    if (intent.side === 'buy' && executionStatus === 'filled') {
+    if (intent.side === 'buy' && executionStatus === 'filled' && recommendation) {
       if (positionReviewSourceId) {
         await updatePositionReviewOutcome(supabase, {
           positionReviewId: positionReviewSourceId,
@@ -904,23 +1245,64 @@ Deno.serve(async (req): Promise<Response> => {
     })
   } catch (error) {
     if (error instanceof TradeError) {
+      if (error.errorType === 'market_closed') {
+        await resolveClaim(supabase, intent.id, { status: 'scheduled' }).catch(() => {})
+      } else {
+        await resolveClaim(supabase, intent.id, { status: 'rejected' }).catch(() => {})
+      }
+      throw error
+    }
+    // A raw, non-TradeError exception anywhere before the order POST was attempted
+    // (or an unexpected bug) — we know for certain no order was placed, so this is
+    // safely retryable.
+    await resolveClaim(supabase, intent.id, {
+      status: 'failed',
+      retry_count: intent.retry_count + 1,
+    }).catch(() => {})
+    throw new TradeError(safeMessage(error), 500, 'other')
+  }
+}
+
+// Gated on import.meta.main (true when this file is the actual entry point -- both
+// for local `deno run` and for Supabase's edge runtime invoking it directly) so that
+// importing the pure functions above for testing (index.test.ts) doesn't also start
+// a live listening server as a side effect.
+if (import.meta.main) {
+  Deno.serve(async (req): Promise<Response> => {
+    try {
+      const payload = (await req.json()) as ExecuteTradePayload
+      const supabase = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      )
+
+      if (payload.action === 'replace_leg') {
+        return await handleReplaceLeg(supabase, payload)
+      }
+      if (payload.action === 'cancel_position_orders') {
+        return await handleCancelPositionOrders(supabase, payload)
+      }
+      return await handlePlaceOrder(supabase, payload)
+    } catch (error) {
+      if (error instanceof TradeError) {
+        return jsonResponse(
+          {
+            success: false,
+            error: error.message,
+            error_type: error.errorType,
+          },
+          error.status,
+        )
+      }
+
       return jsonResponse(
         {
           success: false,
-          error: error.message,
-          error_type: error.errorType,
+          error: safeMessage(error),
+          error_type: 'other',
         },
-        error.status,
+        500,
       )
     }
-
-    return jsonResponse(
-      {
-        success: false,
-        error: safeMessage(error),
-        error_type: 'other',
-      },
-      500,
-    )
-  }
-})
+  })
+}

@@ -153,6 +153,7 @@ async def test_close_creates_sell_trade_intent_and_executes_immediately(monkeypa
     assert intent["symbol"] == "AAPL"
     assert intent["quantity"] == 10
     assert intent["signal_id"] == "rec-1"
+    assert intent["status"] == "scheduled"  # picked up by the reconciliation job's submission pass
 
 
 @pytest.mark.asyncio
@@ -284,6 +285,139 @@ async def test_no_open_positions_returns_empty_and_still_computes_budget(monkeyp
 
     assert result["reviews"] == []
     assert result["available_risk_budget"] == pytest.approx(100_000.0 * strategy_params.max_portfolio_heat_pct)
+
+
+def _tables_with_bracket_position(**position_overrides) -> dict:
+    tables = _base_tables()
+    tables["portfolio_positions"][0].update(
+        {"entry_order_id": "entry-1", "stop_order_id": "stop-1", "target_order_id": "target-1"}
+    )
+    tables["portfolio_positions"][0].update(position_overrides)
+    return tables
+
+
+class TestBrokerSync:
+    """Once a position was opened via a bracket order, tighten_stop/widen_target/close
+    must sync the live resting order at the broker, not just write new numbers to the
+    DB -- otherwise a stale stop/target order could still fill after the fact."""
+
+    @pytest.mark.asyncio
+    async def test_tighten_stop_replaces_leg_at_broker_before_local_write(self, monkeypatch, strategy_params) -> None:
+        db = FakeDB(_tables_with_bracket_position())
+        captured: dict = {}
+
+        def fake_post(url, *, json, headers, timeout):
+            captured["json"] = json
+            return type("R", (), {"is_success": True, "json": lambda self: {"success": True}})()
+
+        monkeypatch.setattr(position_review.httpx, "post", fake_post)
+        monkeypatch.setattr(
+            position_review, "run_agent",
+            lambda *a, **k: _run_agent_result([_review(recommended_action="tighten_stop", suggested_new_stop=105.0)]),
+        )
+
+        result = await position_review.review_positions(run_id=RUN_ID, strategy_params=strategy_params, db=db, client=object(), now=NOW)
+
+        assert captured["json"] == {"action": "replace_leg", "position_id": "pos-1", "leg": "stop_loss", "new_price": 105.0}
+        updated_position = next(p for p in db.table_rows["portfolio_positions"] if p["id"] == "pos-1")
+        assert updated_position["stop_price"] == 105.0
+        assert "tightened" in result["reviews"][0]["review_note"]
+
+    @pytest.mark.asyncio
+    async def test_tighten_stop_skips_local_write_when_broker_replace_fails(self, monkeypatch, strategy_params) -> None:
+        db = FakeDB(_tables_with_bracket_position())
+
+        def fake_post(url, *, json, headers, timeout):
+            return type("R", (), {"is_success": True, "json": lambda self: {"success": False, "error": "order already filled"}})()
+
+        monkeypatch.setattr(position_review.httpx, "post", fake_post)
+        monkeypatch.setattr(
+            position_review, "run_agent",
+            lambda *a, **k: _run_agent_result([_review(recommended_action="tighten_stop", suggested_new_stop=105.0)]),
+        )
+
+        result = await position_review.review_positions(run_id=RUN_ID, strategy_params=strategy_params, db=db, client=object(), now=NOW)
+
+        updated_position = next(p for p in db.table_rows["portfolio_positions"] if p["id"] == "pos-1")
+        assert updated_position["stop_price"] == 90.0  # unchanged -- broker call failed
+        assert "broker-side replace failed" in result["reviews"][0]["review_note"]
+
+    @pytest.mark.asyncio
+    async def test_widen_target_replaces_leg_at_broker(self, monkeypatch, strategy_params) -> None:
+        db = FakeDB(_tables_with_bracket_position())
+        captured: dict = {}
+
+        def fake_post(url, *, json, headers, timeout):
+            captured["json"] = json
+            return type("R", (), {"is_success": True, "json": lambda self: {"success": True}})()
+
+        monkeypatch.setattr(position_review.httpx, "post", fake_post)
+        monkeypatch.setattr(
+            position_review, "run_agent",
+            lambda *a, **k: _run_agent_result([_review(recommended_action="widen_target", suggested_new_target=140.0)]),
+        )
+
+        result = await position_review.review_positions(run_id=RUN_ID, strategy_params=strategy_params, db=db, client=object(), now=NOW)
+
+        assert captured["json"] == {"action": "replace_leg", "position_id": "pos-1", "leg": "take_profit", "new_price": 140.0}
+        updated_position = next(p for p in db.table_rows["portfolio_positions"] if p["id"] == "pos-1")
+        assert updated_position["target_price"] == 140.0
+        assert "widened" in result["reviews"][0]["review_note"]
+
+    @pytest.mark.asyncio
+    async def test_close_cancels_position_orders_before_creating_sell_intent(self, monkeypatch, strategy_params) -> None:
+        db = FakeDB(_tables_with_bracket_position())
+        captured: dict = {}
+
+        def fake_post(url, *, json, headers, timeout):
+            captured["json"] = json
+            return type("R", (), {"is_success": True, "json": lambda self: {"success": True, "cancelled": True}})()
+
+        monkeypatch.setattr(position_review.httpx, "post", fake_post)
+        monkeypatch.setattr(
+            position_review, "run_agent",
+            lambda *a, **k: _run_agent_result([_review(recommended_action="close", reasoning="invalidated")]),
+        )
+
+        await position_review.review_positions(run_id=RUN_ID, strategy_params=strategy_params, db=db, client=object(), now=NOW)
+
+        assert captured["json"] == {"action": "cancel_position_orders", "position_id": "pos-1"}
+        assert len(db.trade_intents_inserted) == 1
+
+    @pytest.mark.asyncio
+    async def test_close_does_not_create_sell_intent_when_cancel_fails(self, monkeypatch, strategy_params) -> None:
+        db = FakeDB(_tables_with_bracket_position())
+
+        def fake_post(url, *, json, headers, timeout):
+            return type("R", (), {"is_success": True, "json": lambda self: {"success": False, "error": "order not found"}})()
+
+        monkeypatch.setattr(position_review.httpx, "post", fake_post)
+        monkeypatch.setattr(
+            position_review, "run_agent",
+            lambda *a, **k: _run_agent_result([_review(recommended_action="close", reasoning="invalidated")]),
+        )
+
+        result = await position_review.review_positions(run_id=RUN_ID, strategy_params=strategy_params, db=db, client=object(), now=NOW)
+
+        assert db.trade_intents_inserted == []
+        assert "no trade_intent created this run" in result["reviews"][0]["review_note"]
+
+    @pytest.mark.asyncio
+    async def test_close_skips_broker_call_when_no_resting_orders(self, monkeypatch, strategy_params) -> None:
+        # A position with no order ids at all (e.g. opened before this feature existed)
+        # has nothing to cancel -- close should proceed exactly as before.
+        db = FakeDB(_base_tables())
+        calls: list[dict] = []
+        monkeypatch.setattr(position_review.httpx, "post", lambda *a, **k: calls.append(k) or type("R", (), {"is_success": True, "json": lambda self: {"success": True}})())
+        monkeypatch.setattr(
+            position_review, "run_agent",
+            lambda *a, **k: _run_agent_result([_review(recommended_action="close", reasoning="invalidated")]),
+        )
+
+        await position_review.review_positions(run_id=RUN_ID, strategy_params=strategy_params, db=db, client=object(), now=NOW)
+
+        assert calls == []
+        assert len(db.trade_intents_inserted) == 1
 
 
 @pytest.mark.asyncio

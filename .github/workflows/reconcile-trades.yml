@@ -1,15 +1,15 @@
-name: Process Intents
+name: Reconcile Trades
 
 on:
   schedule:
     # Runs every 5 minutes during market hours (9:30 AM - 4:00 PM ET = 14:30 - 20:00 UTC)
-    # Cron: minute(*/5), hour(14-19), day(1-5), month(*), year(*)
+    # Cron: minute(*/5), hour(14-20), day(1-5), month(*), year(*)
     - cron: '*/5 14-20 * * 1-5'
   workflow_dispatch:
 
 jobs:
-  process-intents:
-    name: Process scheduled trade intents
+  reconcile-trades:
+    name: Submit ready intents and reconcile open orders
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +21,9 @@ jobs:
       - name: Sync dependencies
         working-directory: engine-py
         run: uv sync
-      - name: Run process intents
+      - name: Run trade reconciliation
         working-directory: engine-py
-        run: uv run python -m artisan.jobs.process_intents
+        run: uv run python -m artisan.jobs.reconcile_trades
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
