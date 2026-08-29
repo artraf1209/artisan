@@ -692,6 +692,17 @@ async function persistOverrides(
   }
 }
 
+// Alpaca requires whole-cent increments for equities priced >= $1.00; sub-penny
+// increments are only valid below $1.00. Our own DB storage keeps 4 decimal places
+// (finer-grained than Alpaca allows) for internal precision -- this is the point
+// where prices actually sent to the broker need to respect its tick size, or the
+// order is rejected outright (confirmed live: a bracket order with an unrounded
+// 4-decimal take_profit.limit_price was rejected with "sub-penny increment does
+// not fulfill minimum pricing criteria").
+function roundToTickSize(price: number): number {
+  return round(price, price >= 1 ? 2 : 4)
+}
+
 function buildOrderBody(
   intent: TradeIntentRow,
   quantity: number,
@@ -706,21 +717,23 @@ function buildOrderBody(
     client_order_id: intent.id,
   }
 
+  const limitPrice = toNumber(intent.limit_price)
+
   if (intent.side === 'buy' && intent.order_class === 'bracket') {
     return {
       ...base,
       type: 'limit',
-      limit_price: intent.limit_price,
+      limit_price: limitPrice != null ? roundToTickSize(limitPrice) : limitPrice,
       order_class: 'bracket',
-      take_profit: { limit_price: targetPrice },
-      stop_loss: { stop_price: stopPrice },
+      take_profit: { limit_price: targetPrice != null ? roundToTickSize(targetPrice) : targetPrice },
+      stop_loss: { stop_price: stopPrice != null ? roundToTickSize(stopPrice) : stopPrice },
     }
   }
 
   return {
     ...base,
     type: intent.order_type ?? 'market',
-    ...(intent.order_type === 'limit' && intent.limit_price != null ? { limit_price: intent.limit_price } : {}),
+    ...(intent.order_type === 'limit' && limitPrice != null ? { limit_price: roundToTickSize(limitPrice) } : {}),
   }
 }
 
