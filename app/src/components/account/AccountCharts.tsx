@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import {
   Area,
   AreaChart,
@@ -21,6 +22,39 @@ export interface AccountChartPoint {
   drawdown_limit_pct: number
 }
 
+function numbersOf(values: Array<number | null>): number[] {
+  return values.filter((value): value is number => value != null && Number.isFinite(value))
+}
+
+/** [0.95 * lower-of-(min equity, min benchmark), 1.10 * higher-of-(max equity, max
+ * benchmark)] -- both series share one axis, so the domain has to cover whichever
+ * of the two swings further in each direction, not just the equity line alone. */
+function computeEquityDomain(data: AccountChartPoint[]): [number, number] {
+  const values = numbersOf([...data.map((point) => point.equity), ...data.map((point) => point.benchmark)])
+  if (values.length === 0) {
+    return [0, 1]
+  }
+  return [round(Math.min(...values) * 0.95, 2), round(Math.max(...values) * 1.1, 2)]
+}
+
+/** The tolerance line has to land inside the visible range even when actual
+ * drawdown has never come close to it -- so the floor is whichever is lower,
+ * worst drawdown on record or the tolerance line itself, with padding beyond
+ * that so the reference line doesn't sit flush against the chart edge. */
+function computeDrawdownDomain(data: AccountChartPoint[]): [number, number] {
+  const values = numbersOf(data.map((point) => point.drawdown_pct))
+  const thresholdPct = data[0]?.drawdown_limit_pct ?? -18
+  const floor = Math.min(0, thresholdPct, ...values)
+  const domainMin = floor * 1.15
+  const domainMax = Math.max(0, ...values) + Math.abs(domainMin) * 0.05
+  return [round(domainMin, 2), round(domainMax, 2)]
+}
+
+function round(value: number, digits: number) {
+  const factor = 10 ** digits
+  return Math.round(value * factor) / factor
+}
+
 export default function AccountCharts({
   data,
   benchmarkLabel,
@@ -28,6 +62,9 @@ export default function AccountCharts({
   data: AccountChartPoint[]
   benchmarkLabel: string
 }) {
+  const equityDomain = useMemo(() => computeEquityDomain(data), [data])
+  const drawdownDomain = useMemo(() => computeDrawdownDomain(data), [data])
+
   if (data.length === 0) {
     return (
       <div className="rounded-[1.5rem] border border-dashed border-border bg-card/60 px-6 py-10 text-center">
@@ -57,6 +94,7 @@ export default function AccountCharts({
                 tickLine={false}
                 axisLine={false}
                 width={72}
+                domain={equityDomain}
                 tickFormatter={(value) => `$${Math.round(value / 1000)}k`}
               />
               <Tooltip
@@ -108,7 +146,13 @@ export default function AccountCharts({
             <AreaChart data={data}>
               <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
               <XAxis dataKey="date" tickLine={false} axisLine={false} minTickGap={32} />
-              <YAxis tickLine={false} axisLine={false} width={64} tickFormatter={(value) => `${value}%`} />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={64}
+                domain={drawdownDomain}
+                tickFormatter={(value) => `${value}%`}
+              />
               <Tooltip
                 formatter={(value: any, name: any) => {
                   const numericValue = typeof value === 'number' ? value : Number(value)
