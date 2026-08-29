@@ -5,7 +5,12 @@ from datetime import UTC, date, datetime
 
 import artisan.jobs.nightly_ingest as nightly_ingest
 from artisan.adapters.fmp_screener import FmpScreenerUnavailableError
-from artisan.jobs.nightly_ingest import _select_fundamental_refresh_symbols, refresh_universe, run_nightly_ingest
+from artisan.jobs.nightly_ingest import (
+    _select_fundamental_refresh_symbols,
+    refresh_universe,
+    resolve_run_date,
+    run_nightly_ingest,
+)
 
 FAKE_RUN_ID = "fake-run-id"
 
@@ -42,6 +47,16 @@ STRATEGY_ROW = {
         "llm_daily_cost_cap_usd": 5.0,
     },
 }
+
+DEFAULT_MARKET_CALENDAR = [
+    {"date": "2026-05-02", "open": "09:30", "close": "16:00"},
+    {"date": "2026-05-04", "open": "09:30", "close": "16:00"},
+    {"date": "2026-05-05", "open": "09:30", "close": "16:00"},
+]
+
+
+def fake_market_calendar_loader(_start: date, _end: date) -> list[dict]:
+    return DEFAULT_MARKET_CALENDAR
 
 
 class FakeSelectQuery:
@@ -156,6 +171,7 @@ class FakeDB:
         prior_portfolio_snapshots: list[dict] | None = None,
         portfolio_positions: list[dict] | None = None,
         strategy_row: dict | None = None,
+        universe_symbols: list[str] | None = None,
     ) -> None:
         self.inserts: list[dict] = []
         self.fundamental_rows = fundamental_rows or []
@@ -165,10 +181,11 @@ class FakeDB:
         self.portfolio_snapshots_inserted: list[dict] = []
         self.portfolio_positions = portfolio_positions or []
         self.strategy_row = strategy_row or STRATEGY_ROW
+        self.universe_symbols = universe_symbols or ["AAPL", "MSFT"]
 
     def table(self, table_name: str):
         if table_name == "universes":
-            return FakeSelectQuery([{"symbol": "AAPL"}, {"symbol": "MSFT"}])
+            return FakeSelectQuery([{"symbol": symbol} for symbol in self.universe_symbols])
         if table_name == "fundamentals":
             return FakeSelectQuery(self.fundamental_rows)
         if table_name == "audit_log":
@@ -185,13 +202,19 @@ class FakeDB:
 
 
 class FakePricesAdapter:
-    def __init__(self) -> None:
+    def __init__(self, skipped_invalid_symbols: list[str] | None = None) -> None:
         self.saved_rows: list[dict] = []
+        self.last_requested_symbols: list[str] = []
+        self.last_requested_start: date | None = None
+        self.last_requested_end: date | None = None
+        self.last_skipped_invalid_symbols = skipped_invalid_symbols or []
 
     def fetch_daily_bars(self, symbols: list[str], start: date, end: date) -> list[dict]:
-        assert symbols == ["AAPL", "MSFT", "SPY"]
-        assert start < end
-        return [{"symbol": symbol} for symbol in symbols]
+        self.last_requested_symbols = symbols
+        self.last_requested_start = start
+        self.last_requested_end = end
+        assert start <= end
+        return [{"symbol": symbol} for symbol in symbols if symbol not in self.last_skipped_invalid_symbols]
 
     def save_bars(self, rows: list[dict]) -> int:
         self.saved_rows = rows
@@ -244,20 +267,26 @@ def test_run_nightly_ingest_orchestrates_all_stages() -> None:
         account_adapter=account,
         now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),  # Within FMP quota window (9pm UTC)
         refresh_universe_from_screener=False,
+        market_calendar_loader=fake_market_calendar_loader,
     )
 
+    assert summary["run_date"] == "2026-05-04"
     assert summary["symbols"] == 2
     assert summary["fundamental_targets"] == 2
     assert summary["price_rows"] == 3
     assert summary["fundamental_rows"] == 2
     assert summary["news_rows"] == 2
+    assert summary["skipped_invalid_symbols"] == []
     assert prices.saved_rows == [{"symbol": "AAPL"}, {"symbol": "MSFT"}, {"symbol": "SPY"}]
+    assert prices.last_requested_symbols == ["AAPL", "MSFT", "SPY"]
+    assert prices.last_requested_end == date(2026, 5, 4)
     assert fundamentals.synced == ["AAPL", "MSFT"]
 
     # pipeline_runs anchoring -- "ingested", not "completed": daily_pipeline.yml
     # (v2-14) reuses this row through briefing, which owns the terminal status.
     assert summary["run_id"] == FAKE_RUN_ID
     assert db.pipeline_runs[FAKE_RUN_ID]["status"] == "ingested"
+    assert db.pipeline_runs[FAKE_RUN_ID]["run_date"] == "2026-05-04"
     assert db.pipeline_run_updates[-1]["status"] == "ingested"
 
     # portfolio_snapshots: first run, no prior snapshot -> drawdown 0
@@ -275,6 +304,7 @@ def test_run_nightly_ingest_orchestrates_all_stages() -> None:
     # every ingest-stage audit_log payload carries run_id
     assert len(db.inserts) == 5  # run_started, prices, fundamentals, news, summary
     assert all("run_id" in entry["payload"] for entry in db.inserts)
+    assert all("run_date" in entry["payload"] for entry in db.inserts)
 
 
 def test_run_nightly_ingest_computes_drawdown_against_prior_high_water_mark() -> None:
@@ -292,6 +322,7 @@ def test_run_nightly_ingest_computes_drawdown_against_prior_high_water_mark() ->
         account_adapter=FakeAccountAdapter(equity=108_000.0, cash=10_000.0),
         now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),
         refresh_universe_from_screener=False,
+        market_calendar_loader=fake_market_calendar_loader,
     )
 
     snapshot = summary["portfolio_snapshot"]
@@ -364,6 +395,7 @@ def test_run_nightly_ingest_refreshes_full_universe_when_uncapped(monkeypatch) -
         account_adapter=FakeAccountAdapter(),
         now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),  # Within window
         refresh_universe_from_screener=False,
+        market_calendar_loader=fake_market_calendar_loader,
     )
 
     assert summary["fundamental_targets"] == 2
@@ -467,9 +499,11 @@ def test_run_nightly_ingest_returns_skip_on_pre_reset(monkeypatch) -> None:
         db=db,
         now=datetime(2026, 5, 4, 20, 59, tzinfo=UTC),
         refresh_universe_from_screener=False,
+        market_calendar_loader=fake_market_calendar_loader,
     )
 
     assert summary["status"] == "skipped_pre_reset_window"
+    assert summary["run_date"] == "2026-05-04"
     assert summary["symbols"] == 0
     assert summary["price_rows"] == 0
     assert summary["fundamental_rows"] == 0
@@ -499,6 +533,7 @@ def test_run_nightly_ingest_marks_pipeline_run_failed_on_error() -> None:
             account_adapter=FakeAccountAdapter(),
             now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),
             refresh_universe_from_screener=False,
+            market_calendar_loader=fake_market_calendar_loader,
         )
         raise AssertionError("expected RuntimeError for empty universe")
     except RuntimeError as exc:
@@ -508,3 +543,38 @@ def test_run_nightly_ingest_marks_pipeline_run_failed_on_error() -> None:
     failed_entries = [e for e in failing_db.inserts if e["action"] == "nightly_ingest_failed"]
     assert len(failed_entries) == 1
     assert failed_entries[0]["payload"]["run_id"] == FAKE_RUN_ID
+    assert failed_entries[0]["payload"]["run_date"] == "2026-05-04"
+
+
+def test_resolve_run_date_uses_most_recent_completed_us_session_after_midnight_utc() -> None:
+    run_date = resolve_run_date(
+        datetime(2026, 5, 5, 5, 30, tzinfo=UTC),
+        market_calendar_loader=fake_market_calendar_loader,
+    )
+
+    assert run_date == date(2026, 5, 4)
+
+
+def test_run_nightly_ingest_records_skipped_invalid_symbols_and_completes() -> None:
+    db = FakeDB(universe_symbols=["AAPL", "BRK-B", "MSFT"])
+    prices = FakePricesAdapter(skipped_invalid_symbols=["BRK-B"])
+
+    summary = run_nightly_ingest(
+        db=db,
+        prices_adapter=prices,
+        fundamentals_adapter=FakeFundamentalsAdapter(),
+        news_adapter=FakeNewsAdapter(),
+        account_adapter=FakeAccountAdapter(),
+        now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),
+        refresh_universe_from_screener=False,
+        market_calendar_loader=fake_market_calendar_loader,
+    )
+
+    assert summary["status"] == "within_quota_window"
+    assert summary["price_rows"] == 3
+    assert summary["skipped_invalid_symbols"] == ["BRK-B"]
+    assert db.pipeline_runs[FAKE_RUN_ID]["status"] == "ingested"
+
+    price_audits = [entry for entry in db.inserts if entry["action"] == "ingest_prices"]
+    assert len(price_audits) == 1
+    assert price_audits[0]["payload"]["skipped_invalid_symbols"] == ["BRK-B"]

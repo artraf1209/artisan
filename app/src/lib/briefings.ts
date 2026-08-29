@@ -14,6 +14,28 @@ export type BriefingRecord = {
   created_at: string
 }
 
+export function formatStoredCalendarDate(value: string): string {
+  if (!value) {
+    return 'No briefing date'
+  }
+
+  const [yearText, monthText, dayText] = value.split('-')
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const day = Number(dayText)
+
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(Date.UTC(year, month - 1, day)))
+}
+
 function normalizeUrgentFlags(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return []

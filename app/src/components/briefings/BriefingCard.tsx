@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
-import type { BriefingRecord } from '@/lib/briefings'
+import { formatStoredCalendarDate, type BriefingRecord } from '@/lib/briefings'
 
 const SYMBOL_RE = /\b[A-Z]{1,5}\b/g
 const NON_SYMBOL_TOKENS = new Set([
@@ -18,18 +18,6 @@ const NON_SYMBOL_TOKENS = new Set([
   'CLOSE',
   'ADD',
 ])
-
-function formatBriefingDate(value: string) {
-  if (!value) {
-    return 'No briefing date'
-  }
-
-  return new Date(`${value}T00:00:00Z`).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
 
 function formatModel(value: string | null) {
   return value ?? 'Unknown model'
@@ -94,7 +82,7 @@ export default function BriefingCard({ briefing }: { briefing: BriefingRecord })
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold tracking-[-0.04em] text-foreground">
-                {formatBriefingDate(briefing.briefing_date)}
+                {formatStoredCalendarDate(briefing.briefing_date)}
               </h2>
               <span className="rounded-full border border-border/70 bg-card/80 px-3 py-1 text-xs uppercase tracking-[0.16em] text-muted-foreground">
                 {formatModel(briefing.model)}

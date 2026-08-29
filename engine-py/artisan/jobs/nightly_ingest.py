@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+import httpx
 
 from artisan.adapters import (
     AlpacaAccountAdapter,
@@ -19,6 +22,8 @@ logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.I
 logger = logging.getLogger(__name__)
 
 TRAILING_RETURN_WINDOW_DAYS = 252
+MARKET_CALENDAR_LOOKBACK_DAYS = 14
+US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def is_within_fmp_quota_window(now: datetime | None = None) -> bool:
@@ -231,6 +236,82 @@ def _news_lookback_start(today: date) -> date:
     return today - timedelta(days=3 if today.weekday() == 0 else 1)
 
 
+def _load_market_calendar(
+    start: date,
+    end: date,
+    *,
+    http_client: httpx.Client | None = None,
+    base_url: str | None = None,
+) -> list[dict[str, Any]]:
+    client = http_client or httpx.Client(timeout=30.0)
+    try:
+        response = client.get(
+            f"{(base_url or settings.alpaca_base_url).rstrip('/')}/v2/calendar",
+            params={
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "date_type": "TRADING",
+            },
+            headers={
+                "APCA-API-KEY-ID": settings.alpaca_api_key,
+                "APCA-API-SECRET-KEY": settings.alpaca_api_secret,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
+    finally:
+        if http_client is None:
+            client.close()
+
+
+def _parse_market_close(session: dict[str, Any]) -> datetime:
+    session_date = date.fromisoformat(str(session["date"]))
+    raw_close = str(session.get("close") or "")
+
+    if "T" in raw_close:
+        normalized = raw_close.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).astimezone(US_MARKET_TIMEZONE)
+
+    close_parts = [int(part) for part in raw_close.split(":") if part]
+    if len(close_parts) == 2:
+        close_parts.append(0)
+    if len(close_parts) != 3:
+        raise RuntimeError(f"Unexpected Alpaca market calendar close value: {raw_close!r}")
+
+    return datetime.combine(
+        session_date,
+        time(close_parts[0], close_parts[1], close_parts[2]),
+        tzinfo=US_MARKET_TIMEZONE,
+    )
+
+
+def resolve_run_date(
+    now: datetime,
+    *,
+    market_calendar_loader: Callable[[date, date], list[dict[str, Any]]] | None = None,
+) -> date:
+    market_now = now.astimezone(US_MARKET_TIMEZONE)
+    calendar_loader = market_calendar_loader or _load_market_calendar
+    calendar_rows = calendar_loader(
+        market_now.date() - timedelta(days=MARKET_CALENDAR_LOOKBACK_DAYS),
+        market_now.date(),
+    )
+    if not calendar_rows:
+        raise RuntimeError("Alpaca market calendar returned no sessions for run-date resolution")
+
+    last_completed_session: date | None = None
+    for session in sorted(calendar_rows, key=lambda row: str(row.get("date") or "")):
+        session_date = date.fromisoformat(str(session["date"]))
+        if market_now >= _parse_market_close(session):
+            last_completed_session = session_date
+
+    if last_completed_session is None:
+        raise RuntimeError("Unable to resolve a completed US trading session for nightly ingest")
+
+    return last_completed_session
+
+
 def _create_pipeline_run(db, run_date: date) -> str:
     response = (
         db.table("pipeline_runs")
@@ -337,10 +418,11 @@ def run_nightly_ingest(
     now: datetime | None = None,
     refresh_universe_from_screener: bool = True,
     force_pre_reset: bool = False,
+    market_calendar_loader: Callable[[date, date], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     db = db or get_client()
     now = now or datetime.now(UTC)
-    run_date = now.date()
+    run_date = resolve_run_date(now, market_calendar_loader=market_calendar_loader)
 
     run_id = _create_pipeline_run(db, run_date)
 
@@ -357,11 +439,12 @@ def run_nightly_ingest(
             action="nightly_ingest_skipped",
             entity="pipeline_runs",
             entity_id=run_id,
-            payload={"run_id": run_id, "reason": guard_reason},
+            payload={"run_id": run_id, "run_date": run_date.isoformat(), "reason": guard_reason},
         )
         return {
             "status": guard_reason,
             "run_id": run_id,
+            "run_date": run_date.isoformat(),
             "symbols": 0,
             "screened_symbols": 0,
             "universe_refresh_status": "skipped_pre_reset_window",
@@ -369,6 +452,7 @@ def run_nightly_ingest(
             "price_rows": 0,
             "fundamental_rows": 0,
             "news_rows": 0,
+            "skipped_invalid_symbols": [],
             "failures": [],
         }
 
@@ -383,6 +467,7 @@ def run_nightly_ingest(
             entity_id=run_id,
             payload={
                 "run_id": run_id,
+                "run_date": run_date.isoformat(),
                 "strategy_id": settings.strategy_id,
                 "shortlist_size": strategy_params.shortlist_size,
                 "max_concurrent_positions": strategy_params.max_concurrent_positions,
@@ -421,6 +506,7 @@ def run_nightly_ingest(
         summary: dict[str, Any] = {
             "status": guard_reason,
             "run_id": run_id,
+            "run_date": run_date.isoformat(),
             "symbols": len(symbols),
             "screened_symbols": universe_refresh.get("screened_count", len(symbols)),
             "universe_refresh_status": universe_refresh.get("status"),
@@ -428,15 +514,19 @@ def run_nightly_ingest(
             "price_rows": 0,
             "fundamental_rows": 0,
             "news_rows": 0,
+            "skipped_invalid_symbols": [],
             "failures": [],
         }
 
         # ── Price bars (include SPY as benchmark) ─────────────────────────
-        price_start = now.date() - timedelta(days=settings.price_history_lookback_days)
-        price_end = now.date()
+        price_start = run_date - timedelta(days=settings.price_history_lookback_days)
+        price_end = run_date
         all_price_symbols = list(dict.fromkeys(symbols + ["SPY"]))  # SPY for market regime + beta
 
         bars = prices_adapter.fetch_daily_bars(all_price_symbols, start=price_start, end=price_end)
+        summary["skipped_invalid_symbols"] = list(
+            getattr(prices_adapter, "last_skipped_invalid_symbols", [])
+        )
         summary["price_rows"] = prices_adapter.save_bars(bars)
         write_audit_log(
             db,
@@ -449,6 +539,8 @@ def run_nightly_ingest(
                 "row_count": summary["price_rows"],
                 "start": price_start.isoformat(),
                 "end": price_end.isoformat(),
+                "run_date": run_date.isoformat(),
+                "skipped_invalid_symbols": summary["skipped_invalid_symbols"],
             },
         )
 
@@ -470,6 +562,7 @@ def run_nightly_ingest(
             entity="fundamentals",
             payload={
                 "run_id": run_id,
+                "run_date": run_date.isoformat(),
                 "row_count": fundamental_rows,
                 "refresh_targets": refresh_symbols,
                 "failures": [f for f in summary["failures"] if f["stage"] == "fundamentals"],
@@ -495,6 +588,7 @@ def run_nightly_ingest(
             entity="news_articles",
             payload={
                 "run_id": run_id,
+                "run_date": run_date.isoformat(),
                 "row_count": news_rows,
                 "from": news_start.isoformat(),
                 "to": now.date().isoformat(),
@@ -537,7 +631,7 @@ def run_nightly_ingest(
             action="nightly_ingest_failed",
             entity="pipeline_runs",
             entity_id=run_id,
-            payload={"run_id": run_id, "error": str(exc)},
+            payload={"run_id": run_id, "run_date": run_date.isoformat(), "error": str(exc)},
         )
         raise
 
