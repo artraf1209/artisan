@@ -12,7 +12,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background text-foreground sm:flex">
       <Sidebar />
       <div className="min-w-0 flex-1">
-        <main className="mx-auto w-full max-w-7xl min-w-0 px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-6 sm:px-6 sm:pb-12 sm:pt-10 lg:px-8 xl:px-10">
+        <main className="mx-auto w-full max-w-7xl min-w-0 px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-[calc(1.5rem+env(safe-area-inset-top))] sm:px-6 sm:pb-12 sm:pt-10 lg:px-8 xl:px-10">
           {children}
         </main>
       </div>
