@@ -26,12 +26,12 @@ import { createAdminClient } from '@/lib/supabase/admin'
 export const CHALLENGE_COOKIE_NAME = 'artisan_webauthn_challenge'
 export const CHALLENGE_MAX_AGE_SECONDS = 300 // 5 minutes
 
-const RP_NAME = 'Artisan'
+const RP_NAME = 'ATLAS'
 // This app has exactly one owner and no user table backing auth -- there's
 // nothing real to derive a WebAuthn userID from, so it's a fixed, synthetic
 // value. It only needs to be stable, never meaningful.
 const OWNER_USER_ID = new TextEncoder().encode('artisan-owner')
-const OWNER_NAME = 'Artisan Owner'
+const OWNER_NAME = 'ATLAS Owner'
 
 function getRpIdAndOrigin(): { rpID: string; origin: string } {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL

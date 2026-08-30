@@ -2,7 +2,7 @@
  * system isn't changing, only the IA around it), minus the old unlabeled
  * icon-shortcut cluster. */
 export default function SectionHeader({
-  eyebrow = 'Artisan',
+  eyebrow = 'ATLAS',
   title,
   subtitle,
 }: {

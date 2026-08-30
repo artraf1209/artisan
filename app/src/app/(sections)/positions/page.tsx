@@ -13,7 +13,7 @@ export default async function PositionsPage() {
   const dayPnl = account?.day_pnl ?? null
 
   return <div className="space-y-4">
-    <header><p className="font-[family-name:var(--font-display)] text-sm tracking-[0.14em] text-amber">ARTISAN</p><p className="mt-2 text-[0.65rem] uppercase tracking-[0.08em] text-muted-foreground">Portfolio positions · refreshed from reconciliation</p></header>
+    <header><p className="font-[family-name:var(--font-display)] text-sm tracking-[0.14em] text-amber">ATLAS</p><p className="mt-2 text-[0.65rem] uppercase tracking-[0.08em] text-muted-foreground">Portfolio positions · refreshed from reconciliation</p></header>
     <section className="grid grid-cols-3 divide-x divide-border border border-border bg-card"><StripMetric label="Equity" value={formatCurrency(account?.equity)} /><StripMetric label="Day P/L" value={formatCurrency(dayPnl)} tone={dayPnl == null || dayPnl === 0 ? 'neutral' : dayPnl > 0 ? 'profit' : 'loss'} /><StripMetric label="Open" value={String(positions.length)} /></section>
     {positions.length === 0 ? <p className="border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">No open positions.</p> : positions.map((position) => <PositionCard key={position.id} position={position} />)}
     <details className="border border-border p-4 text-sm text-muted-foreground"><summary className="cursor-pointer uppercase tracking-[0.08em] text-paper">Portfolio</summary><p className="mt-3">Expanded portfolio analytics, exposure, drawdown, and annual goal tracking remain available in Account.</p></details>

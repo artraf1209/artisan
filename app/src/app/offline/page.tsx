@@ -11,7 +11,7 @@ export default function OfflinePage() {
           Connection lost
         </h1>
         <p className="text-sm leading-6 text-muted-foreground">
-          Artisan can still show cached UI, but live market data and approvals need a network
+          ATLAS can still show cached UI, but live market data and approvals need a network
           connection.
         </p>
         <Link

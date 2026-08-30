@@ -21,7 +21,7 @@ export default async function LoginPage({
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm rounded-[1.5rem] border border-border bg-card/95 p-6 shadow-[0_20px_45px_rgba(0,0,0,0.22)]">
-        <h1 className="text-xl font-semibold tracking-[-0.03em] text-foreground">Artisan</h1>
+        <h1 className="text-xl font-semibold tracking-[-0.03em] text-foreground">ATLAS</h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">Sign in to continue.</p>
 
         {passkeyEnabled ? (

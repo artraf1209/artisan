@@ -7,17 +7,17 @@ const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mon
 const michroma = Michroma({ weight: '400', subsets: ['latin'], variable: '--font-display' })
 
 export const metadata: Metadata = {
-  title: 'Artisan',
-  description: 'Installable AI trading workspace for dashboard, recommendations, briefing, and strategy controls.',
+  title: 'ATLAS',
+  description: 'Installable AI trading workspace for recommendations, positions, briefings, and strategy controls.',
   manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Artisan',
+    title: 'ATLAS',
   },
   icons: {
-    icon: '/artisan-icon-192.png',
-    apple: '/artisan-icon-512.png',
+    icon: '/atlas-icon-192.png',
+    apple: '/atlas-apple-touch-icon.png',
   },
 }
 

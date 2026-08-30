@@ -17,8 +17,8 @@ const PUBLIC_PATHS = new Set([
   '/offline',
   '/manifest.webmanifest',
   '/sw.js',
-  '/artisan-icon-192.png',
-  '/artisan-icon-512.png',
+  '/atlas-icon-192.png',
+  '/atlas-icon-512.png',
   // File-based icon route (app/src/app/icon.tsx).
   '/icon',
   '/favicon.ico',

@@ -192,7 +192,7 @@ export default async function StrategyConfigPage() {
 
           <SettingsEditor
             strategyId={strategy.id}
-            strategyName={strategy.name ?? 'artisan_v2'}
+            strategyName={strategy.name ?? 'atlas_v2'}
             initialValues={initialValues}
             lastModifiedAt={latestAudit?.created_at ?? null}
             groupDisclosures={groupDisclosures}

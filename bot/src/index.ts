@@ -8,7 +8,7 @@ const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN!)
 
 bot.command('start', (ctx) =>
   ctx.reply(
-    'Artisan trading bot online.\n\nCommands:\n/status — regime, equity, drawdown, and pause state\n/trades — open positions with unrealized P&L\n/pause [90m|4h|2d] — halt the v2 pipeline\n/resume — clear the pause and restart trading',
+    'ATLAS trading bot online.\n\nCommands:\n/status — regime, equity, drawdown, and pause state\n/trades — open positions with unrealized P&L\n/pause [90m|4h|2d] — halt the v2 pipeline\n/resume — clear the pause and restart trading',
   ),
 )
 
@@ -21,5 +21,5 @@ bot.catch((err) => {
   console.error('Bot error:', err)
 })
 
-console.log('Artisan bot starting...')
+console.log('ATLAS bot starting...')
 bot.start()

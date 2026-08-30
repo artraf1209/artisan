@@ -100,7 +100,7 @@ async function runCycle() {
 }
 
 async function main() {
-  logger.info(`Artisan engine starting (paper=${isPaper})`)
+  logger.info(`ATLAS engine starting (paper=${isPaper})`)
 
   await runCycle()
 

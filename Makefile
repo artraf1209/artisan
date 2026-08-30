@@ -11,7 +11,7 @@ BUN      ?= $(HOME)/.bun/bin/bun
 
 help:
 	@echo ""
-	@echo "  Artisan — available targets"
+	@echo "  ATLAS — available targets"
 	@echo ""
 	@echo "  App (Next.js)"
 	@echo "    app-install      Install app dependencies"

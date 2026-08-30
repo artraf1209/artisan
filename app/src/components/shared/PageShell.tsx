@@ -9,7 +9,7 @@ type Action = {
 }
 
 export default function PageShell({
-  eyebrow = 'Artisan',
+  eyebrow = 'ATLAS',
   title,
   subtitle,
   actions = [],
