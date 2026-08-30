@@ -352,6 +352,22 @@ def _fetch_trailing_baseline_snapshot(db, account_id: str, since: date) -> dict 
     return rows[0] if rows else None
 
 
+def _load_open_position_symbols(db, account_id: str) -> list[str]:
+    """Symbols with a currently-open portfolio_positions row -- kept in the daily
+    price-bar pull even after a symbol drops out of the screener universe
+    (active=false), since a held position still needs live pricing for reviews,
+    outcome tracking, and this account's own charts regardless of whether it's
+    still screener-eligible today."""
+    rows = (
+        db.table("portfolio_positions")
+        .select("symbol")
+        .eq("account_id", account_id)
+        .execute()
+        .data
+    )
+    return sorted({row["symbol"] for row in rows if row.get("symbol")})
+
+
 def _fetch_open_positions_state(db, account_id: str) -> tuple[int, float]:
     rows = (
         db.table("portfolio_positions")
@@ -518,10 +534,16 @@ def run_nightly_ingest(
             "failures": [],
         }
 
-        # ── Price bars (include SPY as benchmark) ─────────────────────────
+        # ── Price bars (include SPY as benchmark + any open positions) ────
         price_start = run_date - timedelta(days=settings.price_history_lookback_days)
         price_end = run_date
-        all_price_symbols = list(dict.fromkeys(symbols + ["SPY"]))  # SPY for market regime + beta
+        open_position_symbols = _load_open_position_symbols(db, settings.account_id)
+        # Union of the active screener universe, SPY (benchmark), and every symbol
+        # with a currently-open position -- a held position must keep getting
+        # fresh prices even after it drops out of the screener universe (see
+        # _load_open_position_symbols), otherwise reviews/outcomes/charts for it
+        # silently go stale while the position is still live.
+        all_price_symbols = list(dict.fromkeys(symbols + open_position_symbols + ["SPY"]))
 
         bars = prices_adapter.fetch_daily_bars(all_price_symbols, start=price_start, end=price_end)
         summary["skipped_invalid_symbols"] = list(
@@ -536,6 +558,7 @@ def run_nightly_ingest(
             payload={
                 "run_id": run_id,
                 "symbols": all_price_symbols,
+                "open_position_symbols": open_position_symbols,
                 "row_count": summary["price_rows"],
                 "start": price_start.isoformat(),
                 "end": price_end.isoformat(),

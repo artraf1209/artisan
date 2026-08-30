@@ -332,6 +332,34 @@ def test_run_nightly_ingest_computes_drawdown_against_prior_high_water_mark() ->
     assert snapshot["unrealized_pnl"] == 400.0
 
 
+def test_run_nightly_ingest_pulls_prices_for_open_positions_outside_the_universe() -> None:
+    """A held position (ABNB) that has since dropped out of the screener universe
+    (universe_symbols below doesn't include it) must still get fresh price bars
+    every run -- this is the fix for the gap where a symbol's prices silently
+    stopped once universes.active flipped to false while the position stayed
+    open. MSFT overlaps both lists to prove de-dup, not just union."""
+    db = FakeDB(
+        universe_symbols=["AAPL", "MSFT"],
+        portfolio_positions=[{"symbol": "MSFT"}, {"symbol": "ABNB"}],
+    )
+    prices = FakePricesAdapter()
+
+    summary = run_nightly_ingest(
+        db=db,
+        prices_adapter=prices,
+        fundamentals_adapter=FakeFundamentalsAdapter(),
+        news_adapter=FakeNewsAdapter(),
+        account_adapter=FakeAccountAdapter(),
+        now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),
+        refresh_universe_from_screener=False,
+        market_calendar_loader=fake_market_calendar_loader,
+    )
+
+    assert prices.last_requested_symbols == ["AAPL", "MSFT", "ABNB", "SPY"]
+    # the universe count itself is unaffected -- only the price pull grows
+    assert summary["symbols"] == 2
+
+
 def test_select_fundamental_refresh_symbols_prioritizes_missing_then_stale() -> None:
     db = FakeDB(
         fundamental_rows=[
