@@ -26,78 +26,6 @@ MARKET_CALENDAR_LOOKBACK_DAYS = 14
 US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
-def is_within_fmp_quota_window(now: datetime | None = None) -> bool:
-    """
-    Check if current UTC time is within the allowed FMP quota window.
-
-    FMP quota resets at configured hour (default: 8pm UTC / 3pm EST).
-    Buffer period (default: 60min) creates the allowed window start
-    (default: 9pm UTC / 4pm EST).
-
-    Returns True if within window, False if before window (pre-reset).
-    """
-    now = now or datetime.now(UTC)
-
-    reset_hour = settings.fmp_quota_reset_hour_utc
-    reset_minute = settings.fmp_quota_reset_minute_utc
-    buffer_minutes = settings.fmp_quota_buffer_minutes
-
-    # Calculate earliest allowed time (reset time + buffer)
-    allowed_hour = reset_hour + (reset_minute + buffer_minutes) // 60
-    allowed_minute = (reset_minute + buffer_minutes) % 60
-
-    # Handle hour overflow past midnight
-    allowed_hour = allowed_hour % 24
-
-    current_minutes = now.hour * 60 + now.minute
-    allowed_minutes = allowed_hour * 60 + allowed_minute
-
-    return current_minutes >= allowed_minutes
-
-
-def check_fmp_quota_guard(
-    now: datetime | None = None,
-    force_override: bool = False,
-) -> tuple[bool, str]:
-    """
-    Evaluate whether to proceed with FMP API calls or skip as pre-reset.
-
-    Args:
-        now: Optional datetime for testing (defaults to now UTC)
-        force_override: If True, bypasses the guard (for manual operator runs)
-
-    Returns:
-        Tuple of (should_proceed: bool, reason: str)
-    """
-    now = now or datetime.now(UTC)
-
-    # Force override takes priority - operator explicitly requested run
-    if force_override or settings.force_pre_reset_ingest:
-        return True, "forced_pre_reset=true"
-
-    # Check if within allowed window
-    if is_within_fmp_quota_window(now):
-        return True, "within_quota_window"
-
-    # Pre-reset - return skip status
-    reset_time = f"{settings.fmp_quota_reset_hour_utc:02d}:{settings.fmp_quota_reset_minute_utc:02d} UTC"
-    allowed_time = (
-        settings.fmp_quota_reset_hour_utc
-        + (settings.fmp_quota_reset_minute_utc + settings.fmp_quota_buffer_minutes) // 60
-    ) % 24
-    allowed_time_str = f"{allowed_time:02d}:{(settings.fmp_quota_reset_minute_utc + settings.fmp_quota_buffer_minutes) % 60:02d} UTC"
-
-    logger.info(
-        "FMP quota guard blocked run: current_time=%s, reset_time=%s, allowed_time=%s, buffer=%dm",
-        now.strftime("%H:%M UTC"),
-        reset_time,
-        allowed_time_str,
-        settings.fmp_quota_buffer_minutes,
-    )
-
-    return False, "skipped_pre_reset_window"
-
-
 def load_universe(db, strategy_id: str) -> list[str]:
     """Load active universe symbols for a strategy."""
     response = (
@@ -433,7 +361,6 @@ def run_nightly_ingest(
     account_adapter: AlpacaAccountAdapter | None = None,
     now: datetime | None = None,
     refresh_universe_from_screener: bool = True,
-    force_pre_reset: bool = False,
     market_calendar_loader: Callable[[date, date], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     db = db or get_client()
@@ -441,36 +368,6 @@ def run_nightly_ingest(
     run_date = resolve_run_date(now, market_calendar_loader=market_calendar_loader)
 
     run_id = _create_pipeline_run(db, run_date)
-
-    # ── FMP Quota Guard ────────────────────────────────────────────────
-    should_proceed, guard_reason = check_fmp_quota_guard(now=now, force_override=force_pre_reset)
-
-    if not should_proceed:
-        # Pre-reset: return clean no-op instead of making API calls
-        logger.info("FMP quota guard: exiting early, reason=%s", guard_reason)
-        _update_pipeline_run(db, run_id, status="skipped", completed_at=now.isoformat())
-        write_audit_log(
-            db,
-            actor="github-actions",
-            action="nightly_ingest_skipped",
-            entity="pipeline_runs",
-            entity_id=run_id,
-            payload={"run_id": run_id, "run_date": run_date.isoformat(), "reason": guard_reason},
-        )
-        return {
-            "status": guard_reason,
-            "run_id": run_id,
-            "run_date": run_date.isoformat(),
-            "symbols": 0,
-            "screened_symbols": 0,
-            "universe_refresh_status": "skipped_pre_reset_window",
-            "fundamental_targets": 0,
-            "price_rows": 0,
-            "fundamental_rows": 0,
-            "news_rows": 0,
-            "skipped_invalid_symbols": [],
-            "failures": [],
-        }
 
     try:
         # ── Load strategy config from DB (no hardcoded thresholds) ────────
@@ -520,7 +417,7 @@ def run_nightly_ingest(
         )
 
         summary: dict[str, Any] = {
-            "status": guard_reason,
+            "status": "ok",
             "run_id": run_id,
             "run_date": run_date.isoformat(),
             "symbols": len(symbols),
@@ -642,7 +539,6 @@ def run_nightly_ingest(
         # this same pipeline_runs row through score -> ... -> briefing, so only
         # briefing.py's success sets the terminal "completed" status.
         _update_pipeline_run(db, run_id, status="ingested")
-        summary["status"] = guard_reason
         return summary
 
     except Exception as exc:

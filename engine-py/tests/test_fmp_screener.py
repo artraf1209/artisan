@@ -14,7 +14,6 @@ def test_screen_uses_company_screener_and_filters_non_equities() -> None:
             "&marketCapMoreThan=1000000000"
             "&volumeMoreThan=5000000"
             "&exchange=NASDAQ%2CNYSE"
-            "&country=US"
             "&isActivelyTrading=true"
         )
         return httpx.Response(

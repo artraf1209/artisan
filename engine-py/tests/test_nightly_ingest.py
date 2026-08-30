@@ -431,118 +431,6 @@ def test_run_nightly_ingest_refreshes_full_universe_when_uncapped(monkeypatch) -
     assert fundamentals.synced == ["AAPL", "MSFT"]
 
 
-def test_fmp_quota_guard_blocks_pre_reset_window(monkeypatch) -> None:
-    from artisan.jobs.nightly_ingest import check_fmp_quota_guard, is_within_fmp_quota_window
-
-    # Configure reset at 20:00 UTC (8pm), buffer 60min = allow at 21:00
-    monkeypatch.setattr(
-        nightly_ingest,
-        "settings",
-        replace(
-            nightly_ingest.settings,
-            fmp_quota_reset_hour_utc=20,
-            fmp_quota_reset_minute_utc=0,
-            fmp_quota_buffer_minutes=60,
-            force_pre_reset_ingest=False,
-        ),
-    )
-
-    # 20:59 UTC should be blocked (pre-reset)
-    result = is_within_fmp_quota_window(datetime(2026, 5, 4, 20, 59, tzinfo=UTC))
-    assert result is False
-
-    should_proceed, reason = check_fmp_quota_guard(
-        datetime(2026, 5, 4, 20, 59, tzinfo=UTC)
-    )
-    assert should_proceed is False
-    assert reason == "skipped_pre_reset_window"
-
-
-def test_fmp_quota_guard_allows_post_reset_window(monkeypatch) -> None:
-    from artisan.jobs.nightly_ingest import check_fmp_quota_guard, is_within_fmp_quota_window
-
-    monkeypatch.setattr(
-        nightly_ingest,
-        "settings",
-        replace(
-            nightly_ingest.settings,
-            fmp_quota_reset_hour_utc=20,
-            fmp_quota_reset_minute_utc=0,
-            fmp_quota_buffer_minutes=60,
-            force_pre_reset_ingest=False,
-        ),
-    )
-
-    # 21:00 UTC should be allowed (within window)
-    result = is_within_fmp_quota_window(datetime(2026, 5, 4, 21, 0, tzinfo=UTC))
-    assert result is True
-
-    should_proceed, reason = check_fmp_quota_guard(
-        datetime(2026, 5, 4, 21, 0, tzinfo=UTC)
-    )
-    assert should_proceed is True
-    assert reason == "within_quota_window"
-
-
-def test_fmp_quota_guard_force_override_bypasses(monkeypatch) -> None:
-    from artisan.jobs.nightly_ingest import check_fmp_quota_guard
-
-    monkeypatch.setattr(
-        nightly_ingest,
-        "settings",
-        replace(
-            nightly_ingest.settings,
-            fmp_quota_reset_hour_utc=20,
-            fmp_quota_reset_minute_utc=0,
-            fmp_quota_buffer_minutes=60,
-            force_pre_reset_ingest=True,  # Force override via config
-        ),
-    )
-
-    # Even at 20:59 (pre-reset), force should allow
-    should_proceed, reason = check_fmp_quota_guard(
-        datetime(2026, 5, 4, 20, 59, tzinfo=UTC),
-        force_override=True,  # Or via function argument
-    )
-    assert should_proceed is True
-    assert reason == "forced_pre_reset=true"
-
-
-def test_run_nightly_ingest_returns_skip_on_pre_reset(monkeypatch) -> None:
-    monkeypatch.setattr(
-        nightly_ingest,
-        "settings",
-        replace(
-            nightly_ingest.settings,
-            fmp_quota_reset_hour_utc=20,
-            fmp_quota_reset_minute_utc=0,
-            fmp_quota_buffer_minutes=60,
-            force_pre_reset_ingest=False,
-        ),
-    )
-
-    db = FakeDB()
-    # Run at 20:59 (pre-reset) should return no-op
-    summary = run_nightly_ingest(
-        db=db,
-        now=datetime(2026, 5, 4, 20, 59, tzinfo=UTC),
-        refresh_universe_from_screener=False,
-        market_calendar_loader=fake_market_calendar_loader,
-    )
-
-    assert summary["status"] == "skipped_pre_reset_window"
-    assert summary["run_date"] == "2026-05-04"
-    assert summary["symbols"] == 0
-    assert summary["price_rows"] == 0
-    assert summary["fundamental_rows"] == 0
-
-    # pipeline_runs row is still anchored, marked skipped rather than left running
-    assert summary["run_id"] == FAKE_RUN_ID
-    assert db.pipeline_runs[FAKE_RUN_ID]["status"] == "skipped"
-    # no portfolio snapshot is written when the run is skipped
-    assert db.portfolio_snapshots_inserted == []
-
-
 def test_run_nightly_ingest_marks_pipeline_run_failed_on_error() -> None:
     class EmptyUniverseDB(FakeDB):
         def table(self, table_name: str):
@@ -598,7 +486,7 @@ def test_run_nightly_ingest_records_skipped_invalid_symbols_and_completes() -> N
         market_calendar_loader=fake_market_calendar_loader,
     )
 
-    assert summary["status"] == "within_quota_window"
+    assert summary["status"] == "ok"
     assert summary["price_rows"] == 3
     assert summary["skipped_invalid_symbols"] == ["BRK-B"]
     assert db.pipeline_runs[FAKE_RUN_ID]["status"] == "ingested"

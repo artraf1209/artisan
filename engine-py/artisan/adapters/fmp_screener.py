@@ -75,7 +75,6 @@ class FmpScreenerAdapter:
                 marketCapMoreThan=1_000_000_000,
                 volumeMoreThan=5_000_000,
                 exchange="NASDAQ,NYSE",
-                country="US",
                 isActivelyTrading=True,
             )
             logger.info("Universe screener using FMP stable company-screener endpoint")
