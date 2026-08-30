@@ -73,6 +73,35 @@ export function humanizeLegType(value: OrderHistoryRow['leg_type']): string | nu
   return null
 }
 
+/** Shared by every view that diffs an approval-time `trade_intents.overrides`
+ * blob against what was originally recommended (this file's own order rows,
+ * and the New Recommendations / Position Actions history panels) so the
+ * "what did a human actually change" logic can't drift between them. */
+export function computeOverrideDeltas(
+  overrides: Record<string, unknown>,
+  recommended: { shares: number | null; stop_price: number | null; target_price: number | null },
+): string[] {
+  const deltas: string[] = []
+  if (overrides.shares != null && recommended.shares != null && Number(overrides.shares) !== recommended.shares) {
+    deltas.push(`shares: ${recommended.shares} -> ${Number(overrides.shares)}`)
+  }
+  if (
+    overrides.stop_price != null &&
+    recommended.stop_price != null &&
+    Number(overrides.stop_price) !== recommended.stop_price
+  ) {
+    deltas.push(`stop: ${recommended.stop_price} -> ${Number(overrides.stop_price)}`)
+  }
+  if (
+    overrides.target_price != null &&
+    recommended.target_price != null &&
+    Number(overrides.target_price) !== recommended.target_price
+  ) {
+    deltas.push(`target: ${recommended.target_price} -> ${Number(overrides.target_price)}`)
+  }
+  return deltas
+}
+
 function toNumber(value: unknown): number | null {
   if (value == null || value === '') {
     return null
@@ -222,28 +251,11 @@ export async function loadOrders(supabase: any, filters: OrdersFilters = {}): Pr
         ? actualTargetPrice
         : toNumber(recommendation?.target_price)
 
-    const overrideDeltas: string[] = []
-    if (
-      overrides.shares != null &&
-      recommendedShares != null &&
-      Number(overrides.shares) !== recommendedShares
-    ) {
-      overrideDeltas.push(`shares: ${recommendedShares} -> ${Number(overrides.shares)}`)
-    }
-    if (
-      overrides.stop_price != null &&
-      recommendedStopPrice != null &&
-      Number(overrides.stop_price) !== recommendedStopPrice
-    ) {
-      overrideDeltas.push(`stop: ${recommendedStopPrice} -> ${Number(overrides.stop_price)}`)
-    }
-    if (
-      overrides.target_price != null &&
-      recommendedTargetPrice != null &&
-      Number(overrides.target_price) !== recommendedTargetPrice
-    ) {
-      overrideDeltas.push(`target: ${recommendedTargetPrice} -> ${Number(overrides.target_price)}`)
-    }
+    const overrideDeltas = computeOverrideDeltas(overrides, {
+      shares: recommendedShares,
+      stop_price: recommendedStopPrice,
+      target_price: recommendedTargetPrice,
+    })
 
     const outcomeKey =
       sourceType === 'position_review' && typeof overrides.source_id === 'string'

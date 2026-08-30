@@ -1,5 +1,7 @@
 import RecommendationCard from '@/components/queue/RecommendationCard'
+import RecommendationHistoryPanel from '@/components/queue/RecommendationHistoryPanel'
 import { createServerClient } from '@/lib/supabase/server'
+import { loadRecommendationHistory } from '@/lib/recommendation-history'
 import type { RecommendationQueueItem } from '@/lib/queue'
 
 export const dynamic = 'force-dynamic'
@@ -50,6 +52,8 @@ export default async function NewRecommendationsPage() {
     dollar_risk: row.dollar_risk == null ? null : Number(row.dollar_risk),
   }))
 
+  const history = await loadRecommendationHistory(supabase, { limit: 50 })
+
   return (
     <>
       {latestRunError ? (
@@ -89,6 +93,17 @@ export default async function NewRecommendationsPage() {
           ))}
         </div>
       )}
+
+      <section className="rounded-[1.5rem] border border-border bg-card/95 p-5 shadow-[0_20px_45px_rgba(0,0,0,0.22)]">
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">History</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Every recommendation the pipeline has produced, most recent {history.length} shown -- what was
+            recommended, what happened to it, and any edits made before it was sent to the broker.
+          </p>
+        </div>
+        <RecommendationHistoryPanel rows={history} />
+      </section>
     </>
   )
 }

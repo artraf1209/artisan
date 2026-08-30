@@ -1,5 +1,7 @@
 import PositionActionCard from '@/components/queue/PositionActionCard'
+import PositionReviewHistoryPanel from '@/components/queue/PositionReviewHistoryPanel'
 import { createServerClient } from '@/lib/supabase/server'
+import { loadPositionReviewHistory } from '@/lib/position-review-history'
 import type {
   OriginalRecommendationSummary,
   PositionActionQueueItem,
@@ -79,6 +81,8 @@ export default async function PositionActionsPage() {
     }
   })
 
+  const history = await loadPositionReviewHistory(supabase, { limit: 50 })
+
   return (
     <>
       {latestRunError ? (
@@ -118,6 +122,17 @@ export default async function PositionActionsPage() {
           ))}
         </div>
       )}
+
+      <section className="rounded-[1.5rem] border border-border bg-card/95 p-5 shadow-[0_20px_45px_rgba(0,0,0,0.22)]">
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">History</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Every position review the pipeline has produced, most recent {history.length} shown -- including
+            risk-reducing actions that were auto-applied upstream and never needed your approval.
+          </p>
+        </div>
+        <PositionReviewHistoryPanel rows={history} />
+      </section>
     </>
   )
 }
