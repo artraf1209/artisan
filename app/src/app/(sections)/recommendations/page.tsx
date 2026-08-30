@@ -1,10 +1,13 @@
 import RecommendationCard from '@/components/queue/RecommendationCard'
 import RecommendationHistoryPanel from '@/components/queue/RecommendationHistoryPanel'
+import Pagination from '@/components/shared/Pagination'
 import { createServerClient } from '@/lib/supabase/server'
 import { loadRecommendationHistory } from '@/lib/recommendation-history'
 import type { RecommendationQueueItem } from '@/lib/queue'
 
 export const dynamic = 'force-dynamic'
+
+const HISTORY_PAGE_SIZE = 5
 
 function formatRunDate(value: string | null) {
   if (!value) {
@@ -18,7 +21,15 @@ function formatRunDate(value: string | null) {
   })
 }
 
-export default async function NewRecommendationsPage() {
+export default async function NewRecommendationsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ history_page?: string | string[] }>
+}) {
+  const params = searchParams ? await searchParams : undefined
+  const rawHistoryPage = Array.isArray(params?.history_page) ? params.history_page[0] : params?.history_page
+  const historyPage = Math.max(1, Number(rawHistoryPage) || 1)
+
   const supabase = (await createServerClient()) as any
   const {
     data: latestRun,
@@ -52,7 +63,10 @@ export default async function NewRecommendationsPage() {
     dollar_risk: row.dollar_risk == null ? null : Number(row.dollar_risk),
   }))
 
-  const history = await loadRecommendationHistory(supabase, { limit: 50 })
+  const history = await loadRecommendationHistory(supabase, {
+    page: historyPage,
+    pageSize: HISTORY_PAGE_SIZE,
+  })
 
   return (
     <>
@@ -98,11 +112,18 @@ export default async function NewRecommendationsPage() {
         <div className="mb-4">
           <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">History</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Every recommendation the pipeline has produced, most recent {history.length} shown -- what was
-            recommended, what happened to it, and any edits made before it was sent to the broker.
+            Every recommendation the pipeline has produced -- what was recommended, what happened to it, and any
+            edits made before it was sent to the broker.
           </p>
         </div>
-        <RecommendationHistoryPanel rows={history} />
+        <RecommendationHistoryPanel rows={history.rows} />
+        <Pagination
+          page={historyPage}
+          pageSize={HISTORY_PAGE_SIZE}
+          total={history.total}
+          paramName="history_page"
+          basePath="/recommendations"
+        />
       </section>
     </>
   )

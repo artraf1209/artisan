@@ -12,6 +12,11 @@ export interface PositionReviewHistoryRow {
   review_note: string | null
 }
 
+export interface PositionReviewHistoryPage {
+  rows: PositionReviewHistoryRow[]
+  total: number
+}
+
 function toNumber(value: unknown): number | null {
   if (value == null || value === '') {
     return null
@@ -26,26 +31,31 @@ function toNumber(value: unknown): number | null {
  * position-review approval has no shares/stop/target edit affordance today
  * (see PositionActionCard), so there's no override-delta concept to compute
  * here -- new_stop_price/new_target_price are simply what the review itself
- * recommended. */
+ * recommended. Reused by the Position Actions page's history section, one
+ * page at a time. */
 export async function loadPositionReviewHistory(
   supabase: any,
-  options: { limit?: number } = {},
-): Promise<PositionReviewHistoryRow[]> {
-  const limit = options.limit ?? 100
+  options: { page?: number; pageSize?: number } = {},
+): Promise<PositionReviewHistoryPage> {
+  const pageSize = options.pageSize ?? 5
+  const page = Math.max(1, options.page ?? 1)
+  const from = (page - 1) * pageSize
+  const to = from + pageSize - 1
 
-  const { data, error } = await supabase
+  const { data, error, count } = await supabase
     .from('position_reviews')
     .select(
       'id, symbol, recommended_action, reasoning, new_stop_price, new_target_price, trim_shares, status, created_at, reviewed_at, review_note',
+      { count: 'exact' },
     )
     .order('created_at', { ascending: false })
-    .limit(limit)
+    .range(from, to)
 
   if (error) {
     throw new Error(error.message)
   }
 
-  return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+  const rows = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
     id: String(row.id),
     symbol: String(row.symbol),
     recommended_action: String(row.recommended_action),
@@ -58,4 +68,6 @@ export async function loadPositionReviewHistory(
     reviewed_at: (row.reviewed_at as string | null) ?? null,
     review_note: (row.review_note as string | null) ?? null,
   }))
+
+  return { rows, total: count ?? rows.length }
 }

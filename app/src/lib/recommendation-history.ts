@@ -19,6 +19,11 @@ export interface RecommendationHistoryRow {
   override_deltas: string[]
 }
 
+export interface RecommendationHistoryPage {
+  rows: RecommendationHistoryRow[]
+  total: number
+}
+
 function toNumber(value: unknown): number | null {
   if (value == null || value === '') {
     return null
@@ -30,20 +35,28 @@ function toNumber(value: unknown): number | null {
 /** Every recommendation the pipeline has ever produced -- not just today's
  * pending queue -- with what was recommended, what happened to it, when, and
  * (for an approved entry) what a human edited before it went out. Reused by
- * the New Recommendations page's history section. */
+ * the New Recommendations page's history section, one page at a time. */
 export async function loadRecommendationHistory(
   supabase: any,
-  options: { limit?: number } = {},
-): Promise<RecommendationHistoryRow[]> {
-  const limit = options.limit ?? 100
+  options: { page?: number; pageSize?: number } = {},
+): Promise<RecommendationHistoryPage> {
+  const pageSize = options.pageSize ?? 5
+  const page = Math.max(1, options.page ?? 1)
+  const from = (page - 1) * pageSize
+  const to = from + pageSize - 1
 
-  const { data: recommendationRows, error: recommendationError } = await supabase
+  const {
+    data: recommendationRows,
+    error: recommendationError,
+    count,
+  } = await supabase
     .from('recommendations')
     .select(
       'id, symbol, action, conviction, thesis, entry_price, stop_price, target_price, shares, status, created_at, reviewed_at, review_note',
+      { count: 'exact' },
     )
     .order('created_at', { ascending: false })
-    .limit(limit)
+    .range(from, to)
 
   if (recommendationError) {
     throw new Error(recommendationError.message)
@@ -77,7 +90,7 @@ export async function loadRecommendationHistory(
     }
   }
 
-  return rows.map((row) => {
+  const mapped = rows.map((row) => {
     const id = String(row.id)
     const recommended = {
       shares: toNumber(row.shares),
@@ -103,4 +116,6 @@ export async function loadRecommendationHistory(
       override_deltas: computeOverrideDeltas(overrides, recommended),
     }
   })
+
+  return { rows: mapped, total: count ?? mapped.length }
 }

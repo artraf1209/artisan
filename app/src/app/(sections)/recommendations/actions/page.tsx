@@ -1,5 +1,6 @@
 import PositionActionCard from '@/components/queue/PositionActionCard'
 import PositionReviewHistoryPanel from '@/components/queue/PositionReviewHistoryPanel'
+import Pagination from '@/components/shared/Pagination'
 import { createServerClient } from '@/lib/supabase/server'
 import { loadPositionReviewHistory } from '@/lib/position-review-history'
 import type {
@@ -10,7 +11,17 @@ import type {
 
 export const dynamic = 'force-dynamic'
 
-export default async function PositionActionsPage() {
+const HISTORY_PAGE_SIZE = 5
+
+export default async function PositionActionsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ history_page?: string | string[] }>
+}) {
+  const params = searchParams ? await searchParams : undefined
+  const rawHistoryPage = Array.isArray(params?.history_page) ? params.history_page[0] : params?.history_page
+  const historyPage = Math.max(1, Number(rawHistoryPage) || 1)
+
   const supabase = (await createServerClient()) as any
   const {
     data: latestRun,
@@ -81,7 +92,10 @@ export default async function PositionActionsPage() {
     }
   })
 
-  const history = await loadPositionReviewHistory(supabase, { limit: 50 })
+  const history = await loadPositionReviewHistory(supabase, {
+    page: historyPage,
+    pageSize: HISTORY_PAGE_SIZE,
+  })
 
   return (
     <>
@@ -127,11 +141,18 @@ export default async function PositionActionsPage() {
         <div className="mb-4">
           <h2 className="text-xl font-semibold tracking-[-0.03em] text-foreground">History</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Every position review the pipeline has produced, most recent {history.length} shown -- including
-            risk-reducing actions that were auto-applied upstream and never needed your approval.
+            Every position review the pipeline has produced -- including risk-reducing actions that were
+            auto-applied upstream and never needed your approval.
           </p>
         </div>
-        <PositionReviewHistoryPanel rows={history} />
+        <PositionReviewHistoryPanel rows={history.rows} />
+        <Pagination
+          page={historyPage}
+          pageSize={HISTORY_PAGE_SIZE}
+          total={history.total}
+          paramName="history_page"
+          basePath="/recommendations/actions"
+        />
       </section>
     </>
   )
