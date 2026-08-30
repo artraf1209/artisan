@@ -22,7 +22,14 @@ function firstValue(value: string | string[] | undefined) {
 }
 
 function humanizeResolution(value: string | null) {
-  return (value ?? 'still_open').replaceAll('_', ' ')
+  // null means no decision_outcomes row exists at all (e.g. the recommendation
+  // was never an 'enter' action, or this is a manual order with no signal_id) --
+  // distinct from a real, still-unresolved 'still_open' row, so it gets its own
+  // label rather than silently reading as an active outcome.
+  if (value == null) {
+    return 'not tracked'
+  }
+  return value.replaceAll('_', ' ')
 }
 
 export default async function OrdersPage({

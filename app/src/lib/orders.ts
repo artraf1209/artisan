@@ -48,7 +48,11 @@ export interface OrderHistoryRow {
   actual_stop_price: number | null
   actual_target_price: number | null
   override_deltas: string[]
-  resolution: string
+  /** null means no decision_outcomes row exists for this order at all (e.g. its
+   * recommendation's action was never 'enter', or it's a manual order with no
+   * signal_id) -- distinct from 'still_open', which means a row exists and
+   * genuinely hasn't resolved yet. Don't collapse the two in the UI. */
+  resolution: string | null
   r_multiple: number | null
   source_type: 'recommendation' | 'position_review'
 }
@@ -76,10 +80,6 @@ function toNumber(value: unknown): number | null {
 
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
-}
-
-function normalizeResolution(value: string | null) {
-  return value ?? 'still_open'
 }
 
 function selectBestOutcome(rows: DecisionOutcomeRow[]) {
@@ -277,7 +277,7 @@ export async function loadOrders(supabase: any, filters: OrdersFilters = {}): Pr
       actual_stop_price: actualStopPrice,
       actual_target_price: actualTargetPrice,
       override_deltas: overrideDeltas,
-      resolution: normalizeResolution(outcome?.resolution ?? null),
+      resolution: outcome?.resolution ?? null,
       r_multiple: toNumber(outcome?.r_multiple),
       source_type: sourceType,
     })
