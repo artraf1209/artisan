@@ -16,8 +16,8 @@ export const metadata: Metadata = {
     title: 'Artisan',
   },
   icons: {
-    icon: '/pwa-icon-192.svg',
-    apple: '/apple-icon',
+    icon: '/artisan-icon-192.png',
+    apple: '/artisan-icon-512.png',
   },
 }
 

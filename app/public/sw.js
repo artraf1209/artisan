@@ -6,7 +6,7 @@ const CACHE_NAME = 'artisan-pwa-v3'
 // corrupting the offline cache. Only unauthenticated-safe routes belong here;
 // the fetch handler below already caches every real page as-you-go once the
 // user is actually logged in and browsing.
-const APP_SHELL = ['/offline', '/manifest.webmanifest', '/pwa-icon-192.svg', '/pwa-icon-512.svg']
+const APP_SHELL = ['/offline', '/manifest.webmanifest', '/artisan-icon-192.png', '/artisan-icon-512.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
