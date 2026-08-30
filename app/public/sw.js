@@ -1,20 +1,12 @@
-const CACHE_NAME = 'artisan-pwa-v2'
-// '/trades' was never a real route (only '/trades/queue' and
-// '/trades/notes/[id]' are) — cache.addAll() fails atomically on that 404,
-// which was silently breaking install. '/signals' was retired (see v3-02).
-const APP_SHELL = [
-  '/',
-  '/dashboard',
-  '/recommendations',
-  '/briefing',
-  '/strategy',
-  '/briefings',
-  '/trades/queue',
-  '/offline',
-  '/manifest.webmanifest',
-  '/pwa-icon-192.svg',
-  '/pwa-icon-512.svg',
-]
+const CACHE_NAME = 'artisan-pwa-v3'
+// Every real page now sits behind the access-gate middleware (see
+// app/src/middleware.ts) -- precaching them here at install time, before a
+// session cookie can exist, would make cache.addAll() follow the redirect to
+// /login and cache *that* HTML under e.g. the '/dashboard' key, silently
+// corrupting the offline cache. Only unauthenticated-safe routes belong here;
+// the fetch handler below already caches every real page as-you-go once the
+// user is actually logged in and browsing.
+const APP_SHELL = ['/offline', '/manifest.webmanifest', '/pwa-icon-192.svg', '/pwa-icon-512.svg']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
