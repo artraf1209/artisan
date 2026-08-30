@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 AGENT_NAME = "synthesis"
 AGENT_TYPE = "synthesis"
 REQUIRED_FIELDS = (
-    "symbol", "action", "conviction", "thesis",
+    "symbol", "action", "conviction", "headline", "sentiment_note", "technical_note", "fundamental_note", "thesis",
     "invalidation_conditions", "redundancy_note", "historical_precedent",
 )
 VALID_ACTIONS = ("enter", "watch", "skip")

@@ -17,16 +17,17 @@ export default function AppleIcon() {
           height: '100%',
           alignItems: 'center',
           justifyContent: 'center',
-          background:
-            'radial-gradient(circle at top left, #2c2a35 0%, #17151d 45%, #0c0b10 100%)',
-          borderRadius: 44,
-          color: '#f8f7f3',
-          fontSize: 88,
+          background: '#0B0C0E',
+          border: '8px solid #FFB300',
+          borderRadius: 36,
+          color: '#FFB300',
+          fontSize: 42,
+          fontFamily: 'monospace',
           fontWeight: 700,
-          letterSpacing: -6,
+          letterSpacing: 1,
         }}
       >
-        A
+        AR
       </div>
     ),
     size,

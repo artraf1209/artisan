@@ -3,14 +3,13 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ChevronsLeft, ChevronsRight, ClipboardCheck, LayoutDashboard, Newspaper, Settings2 } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, ClipboardCheck, MoreHorizontal, WalletCards } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/recommendations', label: 'Recommendations', icon: ClipboardCheck },
-  { href: '/briefing', label: 'Briefing', icon: Newspaper },
-  { href: '/strategy', label: 'Strategy', icon: Settings2 },
+  { href: '/positions', label: 'Positions', icon: WalletCards },
+  { href: '/more', label: 'More', icon: MoreHorizontal },
 ] as const
 
 /**

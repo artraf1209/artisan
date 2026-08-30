@@ -18,6 +18,10 @@ export interface RecommendationQueueItem {
   action: 'enter' | 'watch'
   conviction: string | null
   thesis: string | null
+  headline?: string | null
+  sentiment_note?: string | null
+  technical_note?: string | null
+  fundamental_note?: string | null
   entry_price: number | null
   stop_price: number | null
   target_price: number | null

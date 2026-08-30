@@ -104,6 +104,10 @@ export interface SynthesisRecommendationEntry {
   symbol: string
   action: 'enter' | 'watch' | 'skip'
   conviction: 'high' | 'medium' | 'low'
+  headline?: string
+  sentiment_note?: string
+  technical_note?: string
+  fundamental_note?: string
   thesis: string
   invalidation_conditions: string[]
   redundancy_note: string

@@ -5,10 +5,10 @@ export default function manifest(): MetadataRoute.Manifest {
     name: 'Artisan Trading Dashboard',
     short_name: 'Artisan',
     description: 'AI trading workspace for dashboard, recommendations, briefing, and strategy controls.',
-    start_url: '/dashboard',
+    start_url: '/recommendations',
     display: 'standalone',
-    background_color: '#0a0a0f',
-    theme_color: '#0a0a0f',
+    background_color: '#0B0C0E',
+    theme_color: '#0B0C0E',
     orientation: 'portrait',
     icons: [
       {

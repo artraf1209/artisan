@@ -1,9 +1,10 @@
 import type { Metadata, Viewport } from 'next'
-import { Outfit } from 'next/font/google'
+import { JetBrains_Mono, Michroma } from 'next/font/google'
 import './globals.css'
 import PwaRegistration from '@/components/shared/PwaRegistration'
 
-const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit' })
+const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' })
+const michroma = Michroma({ weight: '400', subsets: ['latin'], variable: '--font-display' })
 
 export const metadata: Metadata = {
   title: 'Artisan',
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#0a0a0f',
+  themeColor: '#0B0C0E',
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
@@ -34,7 +35,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={outfit.className}>
+      <body className={`${jetbrainsMono.variable} ${michroma.variable} font-mono`}>
         <PwaRegistration />
         {children}
       </body>

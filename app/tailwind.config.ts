@@ -10,6 +10,10 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        ink: '#0B0C0E',
+        paper: '#F2EFE6',
+        amber: '#FFB300',
+        'amber-ink': '#2B1E00',
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         card: {
@@ -35,8 +39,8 @@ const config: Config = {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
-        profit: '#22c55e',
-        loss: '#ef4444',
+        profit: '#35D07F',
+        loss: '#FF5C5C',
       },
       borderRadius: {
         lg: 'var(--radius)',

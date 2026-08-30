@@ -290,7 +290,7 @@ export default async function ShortlistPage({
             </p>
           </div>
           <p className="text-sm text-muted-foreground">
-            {entryRows.length} actionable symbols
+            {entryRows.length} actionable {entryRows.length === 1 ? 'symbol' : 'symbols'}
           </p>
         </div>
 

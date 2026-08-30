@@ -39,6 +39,7 @@ export default function ClosePositionDialog({
   const [quantityInput, setQuantityInput] = useState(String(quantity))
   const [limitPriceInput, setLimitPriceInput] = useState(currentPrice != null ? String(currentPrice) : '')
   const [error, setError] = useState<string | null>(null)
+  const [confirmClose, setConfirmClose] = useState(false)
   const [isPending, startTransition] = useTransition()
 
   const parsedQuantity = Number(quantityInput)
@@ -54,6 +55,7 @@ export default function ClosePositionDialog({
     setQuantityInput(String(quantity))
     setLimitPriceInput(currentPrice != null ? String(currentPrice) : '')
     setError(null)
+    setConfirmClose(false)
   }
 
   function submit() {
@@ -189,8 +191,16 @@ export default function ClosePositionDialog({
           <Button variant="outline" onClick={() => setOpen(false)} disabled={isPending}>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={submit} disabled={!canSubmit}>
-            {isPending ? 'Closing...' : 'Close position'}
+          <Button
+            variant="destructive"
+            onClick={() => (confirmClose ? submit() : setConfirmClose(true))}
+            disabled={!canSubmit}
+          >
+            {isPending
+              ? 'Closing...'
+              : confirmClose
+                ? `Confirm close · ${parsedQuantity} sh${orderType === 'limit' ? ` @ $${parsedLimitPrice.toFixed(2)}` : ' at market'}`
+                : 'Review close'}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -112,6 +112,10 @@ def _base_tables() -> dict[str, list[dict]]:
 VALID_RECOMMENDATION = {
     "action": "enter",
     "conviction": "high",
+    "headline": "Quality setup with a clean catalyst and controlled downside.",
+    "sentiment_note": "Positive coverage supports the setup without a material controversy.",
+    "technical_note": "Trend and pullback structure remain aligned with the entry plan.",
+    "fundamental_note": "Quality factors support a durable thesis despite normal valuation risk.",
     "thesis": "Strong setup with quality backing.",
     "invalidation_conditions": ["close below SMA50"],
     "redundancy_note": "no existing Tech exposure",

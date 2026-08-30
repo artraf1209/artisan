@@ -63,6 +63,25 @@ export default async function NewRecommendationsPage({
     dollar_risk: row.dollar_risk == null ? null : Number(row.dollar_risk),
   }))
 
+  const { data: synthesisData } = latestRun?.id
+    ? await supabase
+        .from('agent_analyses')
+        .select('output')
+        .eq('run_id', latestRun.id)
+        .eq('agent_type', 'synthesis')
+        .maybeSingle()
+    : { data: null }
+  const synthesisEntries = ((synthesisData?.output as { recommendations?: Array<Record<string, unknown>> } | undefined)?.recommendations ?? [])
+  const synthesisBySymbol = new Map(synthesisEntries.map((entry) => [entry.symbol, entry]))
+  for (const recommendation of recommendationItems) {
+    const synthesis = synthesisBySymbol.get(recommendation.symbol)
+    if (!synthesis) continue
+    recommendation.headline = typeof synthesis.headline === 'string' ? synthesis.headline : null
+    recommendation.sentiment_note = typeof synthesis.sentiment_note === 'string' ? synthesis.sentiment_note : null
+    recommendation.technical_note = typeof synthesis.technical_note === 'string' ? synthesis.technical_note : null
+    recommendation.fundamental_note = typeof synthesis.fundamental_note === 'string' ? synthesis.fundamental_note : null
+  }
+
   const history = await loadRecommendationHistory(supabase, {
     page: historyPage,
     pageSize: HISTORY_PAGE_SIZE,
