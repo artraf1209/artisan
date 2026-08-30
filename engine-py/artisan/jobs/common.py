@@ -20,6 +20,22 @@ def resolve_current_run_id(db: Any) -> str:
     return rows[0]["id"]
 
 
+def resolve_latest_completed_run_id(db: Any) -> str:
+    """Returns stable market context for work triggered outside the daily pipeline."""
+    rows = (
+        db.table("pipeline_runs")
+        .select("id")
+        .eq("status", "completed")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise RuntimeError("No completed pipeline_runs row found for position review context")
+    return rows[0]["id"]
+
+
 @contextmanager
 def pipeline_job(job_name: str, db: Any = None) -> Iterator[tuple[Any, str]]:
     """Wraps a daily_pipeline.yml job entry point: resolves the shared run_id

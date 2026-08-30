@@ -770,7 +770,7 @@ async function syncPortfolioPosition(
 ) {
   const { data: existingPosition, error: existingPositionError } = await supabase
     .from('portfolio_positions')
-    .select('signal_id,stop_price,target_price,entry_order_id,stop_order_id,target_order_id')
+    .select('signal_id,stop_price,target_price,entry_order_id,stop_order_id,target_order_id,opened_at')
     .eq('account_id', intent.account_id)
     .eq('symbol', intent.symbol)
     .maybeSingle()
@@ -827,6 +827,9 @@ async function syncPortfolioPosition(
     entry_order_id: (intent.order_class === 'bracket' ? (order?.id as string | undefined) : undefined) ?? existingPosition?.entry_order_id ?? null,
     stop_order_id: stopLegId ?? existingPosition?.stop_order_id ?? null,
     target_order_id: targetLegId ?? existingPosition?.target_order_id ?? null,
+    // Preserve the first observed local opening time, including a fill discovered
+    // after the original order submission response was still pending.
+    opened_at: existingPosition?.opened_at ?? (order?.filled_at as string | undefined) ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
 

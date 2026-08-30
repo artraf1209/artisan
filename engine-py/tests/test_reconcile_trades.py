@@ -388,6 +388,40 @@ class TestPollPass:
         assert db.tables["recommendations"][0]["status"] == "executed"
         assert len(db.tables["portfolio_positions"]) == 1
 
+    def test_delayed_fill_uses_broker_fill_time_as_opened_at(self) -> None:
+        db = FakeDB({
+            "trade_executions": [self._open_execution()],
+            "trade_intents": [self._intent()],
+            "portfolio_positions": [],
+            "recommendations": [{"id": "rec-1", "target_price": 120.0, "status": "approved"}],
+            "decision_outcomes": [],
+        })
+        adapter = FakeOrdersAdapter(
+            orders={"o-1": {"id": "o-1", "status": "filled", "filled_qty": "10", "filled_avg_price": "100", "filled_at": "2026-08-10T13:34:13+00:00"}},
+            positions={"AAPL": {"qty": "10", "avg_entry_price": "100", "current_price": "101", "unrealized_pl": "10"}},
+        )
+
+        TradeReconciler(db=db, orders_adapter=adapter).run_poll_pass()
+
+        assert db.tables["portfolio_positions"][0]["opened_at"] == "2026-08-10T13:34:13+00:00"
+
+    def test_reconciliation_never_rewrites_an_existing_opened_at(self) -> None:
+        db = FakeDB({
+            "trade_executions": [self._open_execution()],
+            "trade_intents": [self._intent()],
+            "portfolio_positions": [{"account_id": "acct-1", "symbol": "AAPL", "opened_at": "2026-08-01T09:30:00+00:00"}],
+            "recommendations": [{"id": "rec-1", "target_price": 120.0, "status": "approved"}],
+            "decision_outcomes": [],
+        })
+        adapter = FakeOrdersAdapter(
+            orders={"o-1": {"id": "o-1", "status": "filled", "filled_qty": "10", "filled_avg_price": "100", "filled_at": "2026-08-10T13:34:13+00:00"}},
+            positions={"AAPL": {"qty": "10", "avg_entry_price": "100", "current_price": "101", "unrealized_pl": "10"}},
+        )
+
+        TradeReconciler(db=db, orders_adapter=adapter).run_poll_pass()
+
+        assert db.tables["portfolio_positions"][0]["opened_at"] == "2026-08-01T09:30:00+00:00"
+
     def test_noop_on_unchanged_status_and_no_duplicate_sync(self) -> None:
         db = FakeDB({
             "trade_executions": [self._open_execution(status="partial", filled_qty=5)],
@@ -598,3 +632,54 @@ class TestPositionRefreshPass:
 
         assert summary["orphans_alerted"] == 1
         assert len(alerts) == 1
+
+
+class TestInitialPositionReview:
+    def _position(self, **overrides) -> dict:
+        base = {
+            "id": "pos-1", "account_id": "acct-1", "symbol": "AAPL", "quantity": 10,
+            "opened_at": "2026-08-10T13:34:13+00:00", "initial_reviewed_at": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_marks_only_positions_with_persisted_reviews(self, monkeypatch) -> None:
+        db = FakeDB({"portfolio_positions": [self._position(), self._position(id="pos-2", symbol="MSFT")]})
+        reconciler = TradeReconciler(db=db, orders_adapter=FakeOrdersAdapter())
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.resolve_latest_completed_run_id", lambda db: "run-1")
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.get_strategy_params", lambda *args, **kwargs: object())
+
+        async def fake_review_positions(**kwargs):
+            assert kwargs["run_id"] == "run-1"
+            return {"reviews": [{"position_id": "pos-1"}]}
+
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.review_positions", fake_review_positions)
+
+        summary = reconciler.run_initial_position_review()
+
+        assert summary == {"eligible": 2, "reviewed": 1, "errors": 0}
+        assert db.tables["portfolio_positions"][0]["initial_reviewed_at"] is not None
+        assert db.tables["portfolio_positions"][1]["initial_reviewed_at"] is None
+
+    def test_already_reviewed_positions_are_skipped(self, monkeypatch) -> None:
+        db = FakeDB({"portfolio_positions": [self._position(initial_reviewed_at="2026-08-11T00:00:00+00:00")]})
+        reconciler = TradeReconciler(db=db, orders_adapter=FakeOrdersAdapter())
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.review_positions", lambda **kwargs: pytest.fail("should not run"))
+
+        assert reconciler.run_initial_position_review() == {"eligible": 0, "reviewed": 0, "errors": 0}
+
+    def test_failure_leaves_position_eligible_for_retry(self, monkeypatch) -> None:
+        db = FakeDB({"portfolio_positions": [self._position()], "audit_log": []})
+        reconciler = TradeReconciler(db=db, orders_adapter=FakeOrdersAdapter())
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.resolve_latest_completed_run_id", lambda db: "run-1")
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.get_strategy_params", lambda *args, **kwargs: object())
+
+        async def failing_review_positions(**kwargs):
+            raise RuntimeError("model unavailable")
+
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.review_positions", failing_review_positions)
+        monkeypatch.setattr("artisan.jobs.reconcile_trades.send_alert", lambda **kwargs: None)
+
+        assert reconciler.run_initial_position_review() == {"eligible": 1, "reviewed": 0, "errors": 1}
+        assert db.tables["portfolio_positions"][0]["initial_reviewed_at"] is None
+        assert db.tables["audit_log"][0]["action"] == "initial_position_review_failed"

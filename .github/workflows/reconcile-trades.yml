@@ -30,4 +30,6 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
           ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          STRATEGY_ID: ${{ secrets.STRATEGY_ID }}
           LOG_LEVEL: INFO

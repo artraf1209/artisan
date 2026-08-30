@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -7,8 +8,11 @@ from typing import Any
 import httpx
 
 from artisan.adapters import AlpacaOrdersAdapter
+from artisan.agents.position_review import review_positions
 from artisan.config import settings
 from artisan.db.client import fetch_all_pages, get_client
+from artisan.jobs.common import resolve_latest_completed_run_id
+from artisan.strategy_params import get_strategy_params
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -369,7 +373,7 @@ class TradeReconciler:
         filled_qty: float | None,
         leg_type: str | None,
     ) -> None:
-        self._sync_portfolio_position(intent)
+        self._sync_portfolio_position(intent, opened_at_override=order.get("filled_at"))
 
         intent_status = map_intent_status(execution_status, filled_qty)
         if intent.get("side") != "buy" or (leg_type is not None and leg_type != "entry"):
@@ -400,7 +404,7 @@ class TradeReconciler:
                 "id", intent["signal_id"]
             ).execute()
 
-    def _sync_portfolio_position(self, intent: dict[str, Any]) -> None:
+    def _sync_portfolio_position(self, intent: dict[str, Any], *, opened_at_override: str | None = None) -> None:
         alpaca_position = self.orders.get_position(intent["symbol"])
         self._apply_alpaca_position(
             intent["account_id"],
@@ -408,6 +412,7 @@ class TradeReconciler:
             alpaca_position,
             stop_price_override=_to_float(intent.get("stop_price")),
             signal_id_override=intent.get("signal_id"),
+            opened_at_override=opened_at_override,
         )
 
     def _apply_alpaca_position(
@@ -418,6 +423,7 @@ class TradeReconciler:
         *,
         stop_price_override: float | None = None,
         signal_id_override: str | None = None,
+        opened_at_override: str | None = None,
     ) -> None:
         """Upserts (or deletes, if Alpaca no longer reports it) one portfolio_positions
         row from Alpaca's live position data. `stop_price_override`/`signal_id_override`
@@ -428,7 +434,7 @@ class TradeReconciler:
         untouched, since none of those come from Alpaca's position response anyway."""
         existing_rows = (
             self.db.table("portfolio_positions")
-            .select("signal_id,stop_price,target_price,entry_order_id,stop_order_id,target_order_id")
+            .select("signal_id,stop_price,target_price,entry_order_id,stop_order_id,target_order_id,opened_at")
             .eq("account_id", account_id)
             .eq("symbol", symbol)
             .limit(1)
@@ -457,9 +463,53 @@ class TradeReconciler:
             "entry_order_id": existing.get("entry_order_id"),
             "stop_order_id": existing.get("stop_order_id"),
             "target_order_id": existing.get("target_order_id"),
+            # An upsert must carry opened_at for inserts, but always preserves the
+            # original value once a local position has been established.
+            "opened_at": existing.get("opened_at") or opened_at_override or datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
         self.db.table("portfolio_positions").upsert(row, on_conflict="account_id,symbol").execute()
+
+    def fetch_positions_needing_initial_review(self) -> list[dict[str, Any]]:
+        positions = fetch_all_pages(
+            lambda: self.db.table("portfolio_positions").select("id,symbol,initial_reviewed_at").order("symbol")
+        )
+        return [position for position in positions if position.get("initial_reviewed_at") is None]
+
+    def run_initial_position_review(self) -> dict[str, int]:
+        """Review newly tracked positions without changing the daily run's state.
+
+        The marker is deliberately written only after a persisted review row exists,
+        which makes a transient model or database failure retry on the next cycle.
+        """
+        pending_positions = self.fetch_positions_needing_initial_review()
+        if not pending_positions:
+            return {"eligible": 0, "reviewed": 0, "errors": 0}
+
+        try:
+            run_id = resolve_latest_completed_run_id(self.db)
+            strategy_params = get_strategy_params(settings.strategy_id, db=self.db)
+            result = asyncio.run(review_positions(run_id=run_id, strategy_params=strategy_params, db=self.db))
+            reviewed_ids = {review["position_id"] for review in result["reviews"]}
+            completed_ids = {position["id"] for position in pending_positions} & reviewed_ids
+            reviewed_at = datetime.now(UTC).isoformat()
+            for position_id in completed_ids:
+                self.db.table("portfolio_positions").update({"initial_reviewed_at": reviewed_at}).eq("id", position_id).execute()
+            return {"eligible": len(pending_positions), "reviewed": len(completed_ids), "errors": 0}
+        except Exception as exc:
+            logger.exception("Initial position review failed")
+            write_audit_log(
+                self.db,
+                actor="reconcile-trades",
+                action="initial_position_review_failed",
+                entity="portfolio_positions",
+                payload={"symbols": [position["symbol"] for position in pending_positions], "error": str(exc)},
+            )
+            send_alert(
+                trigger="trade_reconciliation",
+                message="Initial Position Review failed; it will retry on the next reconciliation cycle.",
+            )
+            return {"eligible": len(pending_positions), "reviewed": 0, "errors": 1}
 
     # ------------------------------------------------------------------
     # Refresh every open position every cycle, not just ones with active order
@@ -667,11 +717,13 @@ class TradeReconciler:
         orphans = self.run_orphan_sweep()
         poll = self.run_poll_pass()
         position_refresh = self.run_position_refresh_pass()
+        initial_position_review = self.run_initial_position_review()
         summary = {
             "submission": submission,
             "orphan_sweep": orphans,
             "poll": poll,
             "position_refresh": position_refresh,
+            "initial_position_review": initial_position_review,
             "run_at": datetime.now(UTC).isoformat(),
         }
         logger.info("Reconcile trades summary: %s", summary)

@@ -298,9 +298,10 @@ export type Database = {
           target_price: number | null
           signal_id: string | null
           opened_at: string
+          initial_reviewed_at: string | null
           updated_at: string
         }
-        Insert: Omit<Database['public']['Tables']['portfolio_positions']['Row'], 'id' | 'opened_at' | 'updated_at'>
+        Insert: Omit<Database['public']['Tables']['portfolio_positions']['Row'], 'id' | 'opened_at' | 'initial_reviewed_at' | 'updated_at'>
         Update: Partial<Database['public']['Tables']['portfolio_positions']['Insert']>
       }
       agent_configs: {
