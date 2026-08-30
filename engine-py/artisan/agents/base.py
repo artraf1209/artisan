@@ -271,14 +271,18 @@ _RECOMMENDATION_ITEM_SCHEMA: dict[str, Any] = {
         "symbol": {"type": "string"},
         "action": {"type": "string", "enum": ["enter", "watch", "skip"]},
         "conviction": {"type": "string", "enum": ["high", "medium", "low"]},
+        "headline": {"type": "string", "description": "About 15 words; a clear one-line verdict."},
+        "sentiment_note": {"type": "string", "description": "About 20 words."},
+        "technical_note": {"type": "string", "description": "About 20 words."},
+        "fundamental_note": {"type": "string", "description": "About 20 words."},
         "thesis": {"type": "string"},
         "invalidation_conditions": {"type": "array", "items": {"type": "string"}},
         "redundancy_note": {"type": "string"},
         "historical_precedent": {"type": "string"},
     },
     "required": [
-        "symbol", "action", "conviction", "thesis",
-        "invalidation_conditions", "redundancy_note", "historical_precedent",
+        "symbol", "action", "conviction", "headline", "sentiment_note", "technical_note", "fundamental_note",
+        "thesis", "invalidation_conditions", "redundancy_note", "historical_precedent",
     ],
 }
 
@@ -369,11 +373,47 @@ def _required_tool_fields(name: str, tools: list[dict[str, Any]]) -> tuple[str, 
     return tuple(field for field in required if isinstance(field, str))
 
 
-def _has_required_tool_fields(name: str, tool_input: Any, tools: list[dict[str, Any]]) -> bool:
+def _missing_tool_fields(name: str, tool_input: Any, tools: list[dict[str, Any]]) -> list[str]:
+    """Every missing top-level required field, plus -- for array properties
+    whose item schema declares its own `required` (e.g. submit_recommendations'
+    `recommendations` array, submit_position_reviews' `position_reviews`
+    array) -- every missing per-item field, reported as "arrayField[i].field"
+    so a corrective retry can point the model at the exact gap. Checking only
+    the top level here previously let a forced tool call through as "valid"
+    even when every item in a required array was missing required fields --
+    the outer keys were present, so nothing caught it until a much stricter,
+    non-retrying check downstream (e.g. synthesis.py's validate_required_fields)
+    raised a hard, unrecoverable error instead of ever asking the model to fix it."""
     if not isinstance(tool_input, dict):
-        return False
-    required_fields = _required_tool_fields(name, tools)
-    return all(field in tool_input for field in required_fields)
+        return ["<entire payload>"]
+
+    tool = next((tool for tool in tools if tool.get("name") == name), None)
+    schema = tool.get("input_schema", {}) if tool else {}
+    properties = schema.get("properties") or {}
+
+    missing = [field for field in _required_tool_fields(name, tools) if field not in tool_input]
+
+    for prop_name, prop_schema in properties.items():
+        if not isinstance(prop_schema, dict) or prop_schema.get("type") != "array":
+            continue
+        item_schema = prop_schema.get("items") or {}
+        item_required = [f for f in (item_schema.get("required") or []) if isinstance(f, str)]
+        if not item_required:
+            continue
+        items = tool_input.get(prop_name)
+        if not isinstance(items, list):
+            continue
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                missing.append(f"{prop_name}[{index}]")
+                continue
+            missing.extend(f"{prop_name}[{index}].{field}" for field in item_required if field not in item)
+
+    return missing
+
+
+def _has_required_tool_fields(name: str, tool_input: Any, tools: list[dict[str, Any]]) -> bool:
+    return not _missing_tool_fields(name, tool_input, tools)
 
 
 def _accumulate_usage(totals: dict[str, int], usage: Any) -> None:
@@ -441,15 +481,15 @@ def run_agent(
         forced_call = next((b for b in tool_use_blocks if b.name == forced_tool_name), None)
         tool_results = []
         if forced_call is not None:
-            if _has_required_tool_fields(forced_tool_name, forced_call.input, tools):
+            missing_fields = _missing_tool_fields(forced_tool_name, forced_call.input, tools)
+            if not missing_fields:
                 return {"output": forced_call.input, "tool_calls": tool_call_log, **usage_totals}
 
-            required_fields = ", ".join(_required_tool_fields(forced_tool_name, tools))
+            missing_summary = ", ".join(missing_fields)
             logger.warning(
-                "Ignoring %s call with missing required top-level fields; got keys=%s required=%s",
+                "Ignoring %s call with missing required field(s): %s",
                 forced_tool_name,
-                sorted(forced_call.input.keys()) if isinstance(forced_call.input, dict) else type(forced_call.input).__name__,
-                required_fields,
+                missing_summary,
             )
             tool_results.append(
                 {
@@ -458,8 +498,8 @@ def run_agent(
                     "content": json.dumps(
                         {
                             "error": (
-                                f"{forced_tool_name} is missing required top-level fields: {required_fields}. "
-                                f"Call {forced_tool_name} again with every required field populated."
+                                f"{forced_tool_name} is missing required field(s): {missing_summary}. "
+                                f"Call {forced_tool_name} again with every required field populated on every item."
                             )
                         }
                     ),
