@@ -36,6 +36,26 @@ def resolve_latest_completed_run_id(db: Any) -> str:
     return rows[0]["id"]
 
 
+def load_open_position_symbols(db: Any, account_id: str) -> list[str]:
+    """Symbols with a currently-open portfolio_positions row -- kept in scope
+    for nightly fundamentals refresh and factor scoring (nightly_ingest.py,
+    score.py) and the price-bar pull (nightly_ingest.py) even after a symbol
+    drops out of the screener universe (universes.active = false). A held
+    position still needs fresh fundamentals, a current factor score, and live
+    pricing for reviews and outcome tracking regardless of whether it's still
+    screener-eligible today -- deactivation exists to stop spending nightly
+    API/compute budget on symbols with no ongoing analytical value, and a
+    position you're already holding always has ongoing analytical value."""
+    rows = (
+        db.table("portfolio_positions")
+        .select("symbol")
+        .eq("account_id", account_id)
+        .execute()
+        .data
+    )
+    return sorted({row["symbol"] for row in rows if row.get("symbol")})
+
+
 @contextmanager
 def pipeline_job(job_name: str, db: Any = None) -> Iterator[tuple[Any, str]]:
     """Wraps a daily_pipeline.yml job entry point: resolves the shared run_id

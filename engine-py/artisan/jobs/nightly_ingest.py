@@ -16,6 +16,7 @@ from artisan.adapters import (
 from artisan.adapters.fmp_screener import FmpScreenerAdapter, FmpScreenerUnavailableError
 from artisan.config import settings
 from artisan.db.client import get_client
+from artisan.jobs.common import load_open_position_symbols
 from artisan.strategy_params import get_strategy_params
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
@@ -280,22 +281,6 @@ def _fetch_trailing_baseline_snapshot(db, account_id: str, since: date) -> dict 
     return rows[0] if rows else None
 
 
-def _load_open_position_symbols(db, account_id: str) -> list[str]:
-    """Symbols with a currently-open portfolio_positions row -- kept in the daily
-    price-bar pull even after a symbol drops out of the screener universe
-    (active=false), since a held position still needs live pricing for reviews,
-    outcome tracking, and this account's own charts regardless of whether it's
-    still screener-eligible today."""
-    rows = (
-        db.table("portfolio_positions")
-        .select("symbol")
-        .eq("account_id", account_id)
-        .execute()
-        .data
-    )
-    return sorted({row["symbol"] for row in rows if row.get("symbol")})
-
-
 def _fetch_open_positions_state(db, account_id: str) -> tuple[int, float]:
     rows = (
         db.table("portfolio_positions")
@@ -410,9 +395,14 @@ def run_nightly_ingest(
         if not symbols:
             raise RuntimeError("Universe is empty for configured strategy")
 
+        # A held position must keep getting fresh fundamentals and price bars
+        # even after its symbol drops out of the screener universe (active=false)
+        # -- see load_open_position_symbols. Computed once, reused below for
+        # both the fundamentals refresh target list and the price-bar pull.
+        open_position_symbols = load_open_position_symbols(db, settings.account_id)
         refresh_symbols = _select_fundamental_refresh_symbols(
             db,
-            symbols,
+            list(dict.fromkeys(symbols + open_position_symbols)),
             settings.fundamentals_refresh_limit,
         )
 
@@ -434,12 +424,8 @@ def run_nightly_ingest(
         # ── Price bars (include SPY as benchmark + any open positions) ────
         price_start = run_date - timedelta(days=settings.price_history_lookback_days)
         price_end = run_date
-        open_position_symbols = _load_open_position_symbols(db, settings.account_id)
         # Union of the active screener universe, SPY (benchmark), and every symbol
-        # with a currently-open position -- a held position must keep getting
-        # fresh prices even after it drops out of the screener universe (see
-        # _load_open_position_symbols), otherwise reviews/outcomes/charts for it
-        # silently go stale while the position is still live.
+        # with a currently-open position (open_position_symbols, resolved above).
         all_price_symbols = list(dict.fromkeys(symbols + open_position_symbols + ["SPY"]))
 
         bars = prices_adapter.fetch_daily_bars(all_price_symbols, start=price_start, end=price_end)

@@ -114,6 +114,24 @@ def test_resolve_current_run_id_raises_when_no_rows() -> None:
         resolve_current_run_id(db)
 
 
+def test_load_open_position_symbols_filters_by_account_and_sorts() -> None:
+    db = FakeDB(
+        {
+            "portfolio_positions": [
+                {"symbol": "MSFT", "account_id": "acct-1"},
+                {"symbol": "ABNB", "account_id": "acct-1"},
+                {"symbol": "TSLA", "account_id": "other-account"},
+            ]
+        }
+    )
+    assert common_job.load_open_position_symbols(db, "acct-1") == ["ABNB", "MSFT"]
+
+
+def test_load_open_position_symbols_empty_when_no_positions() -> None:
+    db = FakeDB({"portfolio_positions": []})
+    assert common_job.load_open_position_symbols(db, "acct-1") == []
+
+
 def test_pipeline_job_happy_path_yields_db_and_run_id() -> None:
     db = FakeDB({"pipeline_runs": [{"id": "run-1", "started_at": "2026-06-01T00:00:00+00:00", "status": "ingested"}]})
 
@@ -314,6 +332,44 @@ def test_run_factor_scoring_step_passes_backdated_timestamp(monkeypatch, strateg
 
     assert captured["as_of_date"] == date(2026, 8, 7)
     assert captured["scored_at"] == "2026-08-07T21:05:00+00:00"
+
+
+def test_run_factor_scoring_step_includes_open_positions_outside_the_universe(monkeypatch, strategy_params) -> None:
+    """A held position (ABNB) that has dropped out of the screener universe
+    (_load_active_universe below doesn't include it) must still get scored --
+    same fix as nightly_ingest's price/fundamentals refresh, applied here so
+    position_review keeps a current factor score for it too. AAPL overlaps
+    both lists to prove de-dup, not just union."""
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(score_job, "_load_active_universe", lambda _db, _strategy_id: ["AAPL"])
+    monkeypatch.setattr(score_job, "_load_price_wide_close", lambda _db, _symbols, **_kw: (pd.DataFrame(), pd.Series(dtype=float)))
+
+    def fake_load_fundamentals(_db, symbols):
+        captured["fundamentals_symbols"] = symbols
+        return [{"symbol": s} for s in symbols], {s: [] for s in symbols}
+
+    monkeypatch.setattr(score_job, "_load_fundamentals", fake_load_fundamentals)
+    monkeypatch.setattr(score_job, "_load_sectors", lambda _db, symbols: {s: "Tech" for s in symbols})
+    monkeypatch.setattr(score_job, "score_universe", lambda **_kwargs: [])
+
+    db = FakeDB(
+        {
+            "portfolio_positions": [
+                {"symbol": "AAPL", "account_id": score_job.settings.account_id},
+                {"symbol": "ABNB", "account_id": score_job.settings.account_id},
+            ]
+        }
+    )
+
+    score_job.run_factor_scoring_step(
+        db=db,
+        run_id="run-1",
+        strategy_id="strategy-1",
+        strategy_params=strategy_params,
+    )
+
+    assert captured["fundamentals_symbols"] == ["AAPL", "ABNB"]
 
 
 def test_load_fundamentals_keeps_latest_row_in_growth_history(monkeypatch) -> None:

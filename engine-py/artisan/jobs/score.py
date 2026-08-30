@@ -8,7 +8,7 @@ import pandas as pd
 
 from artisan.config import settings
 from artisan.db.client import fetch_all_pages
-from artisan.jobs.common import pipeline_job
+from artisan.jobs.common import load_open_position_symbols, pipeline_job
 from artisan.scorers.factor_composite import score_universe
 from artisan.scorers.technical import TechnicalScorer
 from artisan.scoring.regime import classify_regime
@@ -196,9 +196,14 @@ def run_factor_scoring_step(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     now = now or datetime.now(UTC)
-    symbols = _load_active_universe(db, strategy_id)
+    # A held position must keep getting a fresh factor score even after its
+    # symbol drops out of the screener universe (active=false) -- see
+    # load_open_position_symbols.
+    active_universe = _load_active_universe(db, strategy_id)
+    open_position_symbols = load_open_position_symbols(db, settings.account_id)
+    symbols = list(dict.fromkeys(active_universe + open_position_symbols))
     if not symbols:
-        raise RuntimeError("score: active universe is empty for configured strategy")
+        raise RuntimeError("score: active universe and open positions are both empty for configured strategy")
 
     price_df, spy_series = _load_price_wide_close(db, symbols, as_of_date=now.date())
     fundamentals, income_history = _load_fundamentals(db, symbols)

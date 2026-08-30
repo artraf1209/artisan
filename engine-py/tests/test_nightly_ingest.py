@@ -332,22 +332,23 @@ def test_run_nightly_ingest_computes_drawdown_against_prior_high_water_mark() ->
     assert snapshot["unrealized_pnl"] == 400.0
 
 
-def test_run_nightly_ingest_pulls_prices_for_open_positions_outside_the_universe() -> None:
+def test_run_nightly_ingest_pulls_prices_and_fundamentals_for_open_positions_outside_the_universe() -> None:
     """A held position (ABNB) that has since dropped out of the screener universe
     (universe_symbols below doesn't include it) must still get fresh price bars
-    every run -- this is the fix for the gap where a symbol's prices silently
-    stopped once universes.active flipped to false while the position stayed
-    open. MSFT overlaps both lists to prove de-dup, not just union."""
+    AND fresh fundamentals every run -- this is the fix for the gap where both
+    silently stopped once universes.active flipped to false while the position
+    stayed open. MSFT overlaps both lists to prove de-dup, not just union."""
     db = FakeDB(
         universe_symbols=["AAPL", "MSFT"],
         portfolio_positions=[{"symbol": "MSFT"}, {"symbol": "ABNB"}],
     )
     prices = FakePricesAdapter()
+    fundamentals = FakeFundamentalsAdapter()
 
     summary = run_nightly_ingest(
         db=db,
         prices_adapter=prices,
-        fundamentals_adapter=FakeFundamentalsAdapter(),
+        fundamentals_adapter=fundamentals,
         news_adapter=FakeNewsAdapter(),
         account_adapter=FakeAccountAdapter(),
         now=datetime(2026, 5, 4, 21, 0, tzinfo=UTC),
@@ -356,7 +357,8 @@ def test_run_nightly_ingest_pulls_prices_for_open_positions_outside_the_universe
     )
 
     assert prices.last_requested_symbols == ["AAPL", "MSFT", "ABNB", "SPY"]
-    # the universe count itself is unaffected -- only the price pull grows
+    assert fundamentals.synced == ["AAPL", "MSFT", "ABNB"]
+    # the universe count itself is unaffected -- only the refresh targets grow
     assert summary["symbols"] == 2
 
 
