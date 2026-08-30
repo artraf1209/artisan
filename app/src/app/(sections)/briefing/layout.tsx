@@ -1,4 +1,3 @@
-import SectionHeader from '@/components/shared/SectionHeader'
 import TabStrip from '@/components/shared/TabStrip'
 
 const TABS = [
@@ -13,10 +12,12 @@ const TABS = [
 export default function BriefingLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <SectionHeader
-        title="Briefing"
-        subtitle="The daily digest, and a full log of every agent behind it."
-      />
+      <header className="mb-5">
+        <p className="font-[family-name:var(--font-display)] text-sm tracking-[0.14em] text-amber">ARTISAN</p>
+        <p className="mt-2 text-[0.65rem] uppercase tracking-[0.08em] text-muted-foreground">
+          The daily digest, and a full log of every agent behind it.
+        </p>
+      </header>
       <TabStrip tabs={TABS} />
       <section className="space-y-5">{children}</section>
     </>

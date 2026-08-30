@@ -1,7 +1,7 @@
 import Link from 'next/link'
 
 const links = [
-  { href: '/recommendations/shortlist', label: 'History', detail: 'Shortlist, orders, and prior recommendations' },
+  { href: '/more/filters', label: 'Filters', detail: 'Shortlist, factor scores, and entry gates' },
   { href: '/briefing', label: 'Briefing', detail: 'Daily digest and per-agent logs' },
   { href: '/strategy', label: 'Strategy', detail: 'Configuration and risk parameters' },
 ]
