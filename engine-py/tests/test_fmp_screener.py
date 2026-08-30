@@ -30,7 +30,7 @@ def test_screen_uses_company_screener_and_filters_non_equities() -> None:
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    adapter = FmpScreenerAdapter(http_client=client)
+    adapter = FmpScreenerAdapter(http_client=client, requests_per_second=0)
 
     assert adapter.screen(top_n=2) == ["AAPL", "MSFT"]
 
@@ -48,7 +48,7 @@ def test_screen_returns_full_qualified_result_when_uncapped() -> None:
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    adapter = FmpScreenerAdapter(http_client=client)
+    adapter = FmpScreenerAdapter(http_client=client, requests_per_second=0)
 
     assert adapter.screen(top_n=None) == ["AAPL", "MSFT", "AMD"]
 
@@ -58,7 +58,7 @@ def test_screen_raises_when_company_screener_is_unavailable() -> None:
         return httpx.Response(403, json={"error": "forbidden"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    adapter = FmpScreenerAdapter(http_client=client)
+    adapter = FmpScreenerAdapter(http_client=client, requests_per_second=0)
 
     with pytest.raises(FmpScreenerUnavailableError, match="stable_company:403"):
         adapter.screen()

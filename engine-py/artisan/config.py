@@ -25,6 +25,8 @@ class Settings:
     screener_top_n: int | None
     fundamentals_refresh_limit: int | None
     price_history_lookback_days: int
+    fmp_requests_per_second: float
+    finnhub_requests_per_second: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -48,6 +50,12 @@ class Settings:
                 return None
             return int(value)
 
+        def as_float(key: str, default: float) -> float:
+            value = os.getenv(key)
+            if value is None or value == "":
+                return default
+            return float(value)
+
         settings = cls(
             supabase_url=require("SUPABASE_URL"),
             supabase_service_role_key=require("SUPABASE_SERVICE_ROLE_KEY"),
@@ -64,6 +72,11 @@ class Settings:
             screener_top_n=as_optional_int("SCREENER_TOP_N"),
             fundamentals_refresh_limit=as_optional_int("FUNDAMENTALS_REFRESH_LIMIT"),
             price_history_lookback_days=as_int("PRICE_HISTORY_LOOKBACK_DAYS", 1900),
+            # Conservative defaults, not derived from any documented plan limit --
+            # tune up if your FMP/Finnhub tier supports more, down if you still
+            # see 429s. 0 (or negative) disables pacing entirely.
+            fmp_requests_per_second=as_float("FMP_REQUESTS_PER_SECOND", 5.0),
+            finnhub_requests_per_second=as_float("FINNHUB_REQUESTS_PER_SECOND", 2.0),
         )
         if missing:
             missing_list = ", ".join(missing)

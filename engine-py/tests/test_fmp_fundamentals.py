@@ -60,6 +60,7 @@ def test_build_fundamental_row_maps_complete_response() -> None:
         db=FakeDB(),
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         base_url="https://financialmodelingprep.com/stable",
+        requests_per_second=0,
     )
 
     row, asset_row = adapter.build_fundamental_row("AAPL")
@@ -94,6 +95,7 @@ def test_build_fundamental_row_uses_mktcap_as_fallback() -> None:
         db=FakeDB(),
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         base_url="https://financialmodelingprep.com/stable",
+        requests_per_second=0,
     )
 
     row, _asset_row = adapter.build_fundamental_row("AAPL")
@@ -121,6 +123,7 @@ def test_sync_symbol_persists_nullable_fields_when_responses_are_partial() -> No
         db=db,
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         base_url="https://financialmodelingprep.com/stable",
+        requests_per_second=0,
     )
 
     row = adapter.sync_symbol("AAPL")

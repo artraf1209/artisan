@@ -5,6 +5,7 @@ import logging
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from artisan.adapters.rate_limit import RateLimiter
 from artisan.config import settings
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ class FmpScreenerUnavailableError(RuntimeError):
 
 def _is_retryable_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
     return isinstance(exc, httpx.TransportError)
 
 
@@ -25,9 +26,12 @@ class FmpScreenerAdapter:
         self,
         http_client: httpx.Client | None = None,
         base_url: str = "https://financialmodelingprep.com/stable",
+        requests_per_second: float | None = None,
     ) -> None:
         self.http_client = http_client or httpx.Client(timeout=30.0)
         self.base_url = base_url.rstrip("/")
+        rps = settings.fmp_requests_per_second if requests_per_second is None else requests_per_second
+        self._rate_limiter = RateLimiter(rps)
 
     @retry(
         retry=retry_if_exception(_is_retryable_error),
@@ -36,6 +40,7 @@ class FmpScreenerAdapter:
         reraise=True,
     )
     def _get(self, path: str, **params: object) -> list[dict]:
+        self._rate_limiter.pace()
         query = {"apikey": settings.fmp_api_key, **{k: v for k, v in params.items() if v is not None}}
         response = self.http_client.get(f"{self.base_url}/{path.lstrip('/')}", params=query)
         response.raise_for_status()

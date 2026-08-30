@@ -61,6 +61,7 @@ def test_fetch_news_scores_and_filters_articles() -> None:
     adapter = FinnhubNewsAdapter(
         db=FakeDB(),
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requests_per_second=0,
     )
 
     rows = adapter.fetch_news("AAPL", date(2026, 5, 1), date(2026, 5, 2))
@@ -76,6 +77,7 @@ def test_save_articles_uses_symbol_url_upsert_key() -> None:
     adapter = FinnhubNewsAdapter(
         db=db,
         http_client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=[]))),
+        requests_per_second=0,
     )
 
     rows = [

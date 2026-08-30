@@ -8,6 +8,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+from artisan.adapters.rate_limit import RateLimiter
 from artisan.config import settings
 from artisan.db.client import get_client
 
@@ -26,11 +27,14 @@ class FinnhubNewsAdapter:
         db=None,
         http_client: httpx.Client | None = None,
         base_url: str = "https://finnhub.io/api/v1",
+        requests_per_second: float | None = None,
     ) -> None:
         self.db = db or get_client()
         self.http_client = http_client or httpx.Client(timeout=30.0)
         self.base_url = base_url.rstrip("/")
         self.analyzer = SentimentIntensityAnalyzer()
+        rps = settings.finnhub_requests_per_second if requests_per_second is None else requests_per_second
+        self._rate_limiter = RateLimiter(rps)
 
     @retry(
         retry=retry_if_exception(_is_retryable_error),
@@ -39,6 +43,7 @@ class FinnhubNewsAdapter:
         reraise=True,
     )
     def _request_news(self, symbol: str, start: date, end: date) -> list[dict[str, Any]]:
+        self._rate_limiter.pace()
         response = self.http_client.get(
             f"{self.base_url}/company-news",
             params={
