@@ -1,4 +1,3 @@
-import SectionHeader from '@/components/shared/SectionHeader'
 import TabStrip from '@/components/shared/TabStrip'
 
 const TABS = [
@@ -9,10 +8,12 @@ const TABS = [
 export default function StrategyLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <SectionHeader
-        title="Strategy"
-        subtitle="Every parameter the pipeline runs on, and the agents behind it."
-      />
+      <header className="mb-5">
+        <p className="font-[family-name:var(--font-display)] text-sm tracking-[0.14em] text-amber">ARTISAN</p>
+        <p className="mt-2 text-[0.65rem] uppercase tracking-[0.08em] text-muted-foreground">
+          Every parameter the pipeline runs on, and the agents behind it.
+        </p>
+      </header>
       <TabStrip tabs={TABS} />
       <section className="space-y-5">{children}</section>
     </>

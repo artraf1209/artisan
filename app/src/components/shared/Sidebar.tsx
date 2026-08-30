@@ -28,7 +28,7 @@ export default function Sidebar() {
       )}
     >
       <div className={cn('flex items-center px-5 py-6', collapsed && 'justify-center px-0')}>
-        {!collapsed && <span className="text-lg font-semibold tracking-[-0.03em] text-foreground">Artisan</span>}
+        {!collapsed && <span className="font-[family-name:var(--font-display)] text-sm tracking-[0.14em] text-amber">ARTISAN</span>}
       </div>
 
       <nav aria-label="Primary" className="flex flex-1 flex-col gap-1 px-3">

@@ -1,10 +1,9 @@
 import Link from 'next/link'
 
 const links = [
+  { href: '/recommendations/shortlist', label: 'History', detail: 'Shortlist, orders, and prior recommendations' },
   { href: '/briefing', label: 'Briefing', detail: 'Daily digest and per-agent logs' },
   { href: '/strategy', label: 'Strategy', detail: 'Configuration and risk parameters' },
-  { href: '/dashboard/account', label: 'Account', detail: 'Equity, cash, buying power, and analytics' },
-  { href: '/recommendations/shortlist', label: 'History', detail: 'Shortlist, orders, and prior recommendations' },
 ]
 
 export default function MorePage() {
